@@ -1,0 +1,12 @@
+{
+  "sqlite.databaseExtensions": [
+    "db",
+    "db3",
+    "sdb",
+    "s3db",
+    "sqlite",
+    "sqlite3",
+    "folder"
+  ],
+  "sqlite.sqlite3": "sqlite3"
+}

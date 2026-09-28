@@ -1,0 +1,35 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Build and packaging output
+build/
+dist/
+*.egg-info/
+
+# Local secrets and environment overrides
+.env
+.env.*
+!.env.example
+
+# SQLite transient journal files (keep the .folder databases in data/)
+*-journal
+*-wal
+*-shm
+
+# Operating system files
+.DS_Store
+Thumbs.db
