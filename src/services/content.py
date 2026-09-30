@@ -1,36 +1,57 @@
-"""Shared ContentService reads over the virtual filesystem.
+"""Shared ContentService over the virtual filesystem.
 
 The service owns scope authorization, active-ancestor checks, per-segment path
-resolution and snapshot assembly.  Every public call opens exactly one read
+resolution, directory rules, revision comparisons, operation transactions and
+snapshot assembly.  Every public call opens exactly one read or short write
 transaction and passes that same connection to each repository method; the
-service never opens a connection itself and contains no SQL.  Write operations
-are intentionally absent from this task.
+service never opens a connection itself and contains no SQL.  Private helpers
+never open a transaction, so public calls cannot nest transactions.
+
+Write operations create objects and their first revision together, append
+immutable document revisions with a conditional pointer update, and merge
+extension metadata without ever touching the fixed structural fields.
 """
 
 from __future__ import annotations
 
 import json
+import uuid
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from typing import Iterator
 
 from ..core.errors import (
+    AlreadyExists,
+    Conflict,
     InvalidArgument,
     NotDirectory,
+    NotDocument,
     NotFound,
     PathOutsideRoot,
     StorageBusy,
     UnsupportedSchema,
 )
-from ..core.json_values import validate_metadata
-from ..core.models import ContentScope, NodeSnapshot, TreeItem
-from ..core.paths import parse_path
+from ..core.json_values import json_equal, thaw_json, validate_metadata
+from ..core.models import (
+    ContentScope,
+    DocumentSnapshot,
+    NodeSnapshot,
+    TreeItem,
+)
+from ..core.paths import parse_path, validate_name
 from ..storage.database import Database
-from ..storage.errors import BusyError, SchemaError
+from ..storage.errors import BusyError, ConstraintError, SchemaError
 from ..storage.management import validate_default_tree
-from ..storage.records import EntryRecord
-from ..storage.repository import Repository
+from ..storage.records import EntryRecord, RevisionRecord
+from ..storage.repository import Repository, is_sibling_name_conflict
 
 __all__ = ["ContentService"]
+
+
+def _utc_now() -> str:
+    """Return the single UTC timestamp used by one service operation."""
+
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _reject_json_constant(token: str) -> None:
@@ -40,7 +61,7 @@ def _reject_json_constant(token: str) -> None:
 
 
 class ContentService:
-    """Read-only virtual filesystem access for one lazy database handle."""
+    """Transactional virtual filesystem access for one lazy database handle."""
 
     def __init__(self, database: Database) -> None:
         self._database = database
@@ -191,12 +212,286 @@ class ContentService:
             entry = self._require_in_scope(repo, scope, object_id)
             return self._metadata(entry)
 
+    # -- public writes ------------------------------------------------------
+
+    def create_folder(
+        self, scope: ContentScope, parent_id: str, name: str
+    ) -> NodeSnapshot:
+        """Create one folder under an active parent and touch that parent."""
+
+        self._require_str(parent_id, "parent_id")
+        validate_name(name)
+        now = _utc_now()
+        try:
+            with self._write() as connection:
+                repo = self._repository(connection, scope)
+                self._require_scope_root(repo, scope)
+                parent = self._require_valid_entry(
+                    repo, scope, parent_id, require_folder=True
+                )
+                self._reject_active_sibling(repo, parent_id, name)
+                object_id = str(uuid.uuid4())
+                position = repo.next_position(parent_id)
+                repo.insert_object(object_id, "folder", now)
+                repo.insert_entry(
+                    self._new_entry(
+                        scope,
+                        object_id,
+                        "folder",
+                        parent_id,
+                        name,
+                        position,
+                        None,
+                        now,
+                    )
+                )
+                repo.touch_entries([parent.object_id], now)
+                return self._snapshot(
+                    repo, scope, self._require_created(repo, object_id)
+                )
+        except ConstraintError as exc:
+            if is_sibling_name_conflict(exc):
+                raise AlreadyExists(
+                    "an active sibling already uses this name",
+                    details={"parent_id": parent_id, "name": name},
+                ) from exc
+            raise
+
+    def create_document(
+        self,
+        scope: ContentScope,
+        parent_id: str,
+        name: str,
+        *,
+        content: str = "",
+    ) -> DocumentSnapshot:
+        """Create a document and its first revision under an active parent."""
+
+        self._require_str(parent_id, "parent_id")
+        validate_name(name)
+        self._require_str(content, "content")
+        now = _utc_now()
+        try:
+            with self._write() as connection:
+                repo = self._repository(connection, scope)
+                self._require_scope_root(repo, scope)
+                parent = self._require_valid_entry(
+                    repo, scope, parent_id, require_folder=True
+                )
+                self._reject_active_sibling(repo, parent_id, name)
+                object_id = str(uuid.uuid4())
+                revision_id = str(uuid.uuid4())
+                position = repo.next_position(parent_id)
+                repo.insert_object(object_id, "document", now)
+                repo.insert_revision(
+                    RevisionRecord(
+                        id=revision_id,
+                        workspace_id=scope.workspace_id,
+                        object_id=object_id,
+                        parent_revision_id=None,
+                        content=content,
+                        created_at=now,
+                    )
+                )
+                repo.insert_entry(
+                    self._new_entry(
+                        scope,
+                        object_id,
+                        "document",
+                        parent_id,
+                        name,
+                        position,
+                        revision_id,
+                        now,
+                    )
+                )
+                repo.touch_entries([parent.object_id], now)
+                return self._document_snapshot(
+                    repo, scope, self._require_created(repo, object_id)
+                )
+        except ConstraintError as exc:
+            if is_sibling_name_conflict(exc):
+                raise AlreadyExists(
+                    "an active sibling already uses this name",
+                    details={"parent_id": parent_id, "name": name},
+                ) from exc
+            raise
+
+    def read_document(
+        self, scope: ContentScope, object_id: str
+    ) -> DocumentSnapshot:
+        """Return the current content and revision of one active document."""
+
+        self._require_str(object_id, "object_id")
+        with self._read() as connection:
+            repo = self._repository(connection, scope)
+            self._require_scope_root(repo, scope)
+            entry = self._require_valid_entry(repo, scope, object_id)
+            return self._document_snapshot(repo, scope, entry)
+
+    def save_document(
+        self,
+        scope: ContentScope,
+        object_id: str,
+        content: str,
+        *,
+        expected_revision_id: str,
+    ) -> DocumentSnapshot:
+        """Append an immutable revision after checking the caller's base.
+
+        The expected revision is compared before the same-content no-op and
+        before any new revision is appended, so a stale writer always gets a
+        :class:`Conflict` even when it submits the current bytes again.
+        """
+
+        self._require_str(object_id, "object_id")
+        self._require_str(content, "content")
+        self._require_str(expected_revision_id, "expected_revision_id")
+        now = _utc_now()
+        with self._write() as connection:
+            repo = self._repository(connection, scope)
+            self._require_scope_root(repo, scope)
+            entry = self._require_valid_entry(repo, scope, object_id)
+            self._require_document(entry)
+            current_id = entry.current_revision_id
+            if not isinstance(current_id, str) or current_id == "":
+                raise UnsupportedSchema(
+                    "document has no current revision",
+                    details={"object_id": object_id},
+                )
+            if current_id != expected_revision_id:
+                raise Conflict(
+                    "document revision does not match the expected base",
+                    details={
+                        "object_id": object_id,
+                        "expected_revision_id": expected_revision_id,
+                        "current_revision_id": current_id,
+                    },
+                )
+            current = repo.get_revision(object_id, current_id)
+            if current is None:
+                raise UnsupportedSchema(
+                    "current document revision is missing",
+                    details={"object_id": object_id, "revision_id": current_id},
+                )
+            if content == current.content:
+                return self._document_snapshot(repo, scope, entry)
+
+            revision_id = str(uuid.uuid4())
+            repo.insert_revision(
+                RevisionRecord(
+                    id=revision_id,
+                    workspace_id=scope.workspace_id,
+                    object_id=object_id,
+                    parent_revision_id=current_id,
+                    content=content,
+                    created_at=now,
+                )
+            )
+            affected = repo.update_entry(
+                object_id,
+                {
+                    "current_revision_id": revision_id,
+                    "version": entry.version + 1,
+                    "modified_at": now,
+                },
+                expected_version=entry.version,
+                expected_revision_id=current_id,
+            )
+            if affected != 1:
+                raise Conflict(
+                    "document changed while saving",
+                    details={"object_id": object_id},
+                )
+            return self._document_snapshot(
+                repo, scope, self._require_created(repo, object_id)
+            )
+
+    def set_metadata(
+        self,
+        scope: ContentScope,
+        object_id: str,
+        changes: dict,
+        *,
+        expected_version: int,
+    ) -> NodeSnapshot:
+        """Merge extension keys into one entry after checking its version.
+
+        Only extension keys are accepted; structural fields are rejected before
+        the transaction.  The expected version is checked before the no-op
+        comparison, so a stale version always conflicts even for equal values.
+        """
+
+        self._require_str(object_id, "object_id")
+        self._require_positive_version(expected_version)
+        validate_metadata(changes)
+        now = _utc_now()
+        with self._write() as connection:
+            repo = self._repository(connection, scope)
+            self._require_scope_root(repo, scope)
+            entry = self._require_valid_entry(repo, scope, object_id)
+            if entry.version != expected_version:
+                raise Conflict(
+                    "entry version does not match the expected version",
+                    details={
+                        "object_id": object_id,
+                        "expected_version": expected_version,
+                        "current_version": entry.version,
+                    },
+                )
+            current = self._metadata(entry)
+            merged = thaw_json(current)
+            for key, value in changes.items():
+                merged[key] = thaw_json(value)
+            if json_equal(merged, current):
+                return self._snapshot(repo, scope, entry)
+            try:
+                payload = json.dumps(
+                    merged,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+            except (TypeError, ValueError) as exc:
+                raise InvalidArgument(
+                    "metadata is not JSON serialisable",
+                    details={"object_id": object_id},
+                ) from exc
+            affected = repo.update_entry(
+                object_id,
+                {
+                    "metadata_json": payload,
+                    "version": entry.version + 1,
+                    "modified_at": now,
+                },
+                expected_version=entry.version,
+            )
+            if affected != 1:
+                raise Conflict(
+                    "entry changed while updating metadata",
+                    details={"object_id": object_id},
+                )
+            return self._snapshot(
+                repo, scope, self._require_created(repo, object_id)
+            )
+
     # -- transaction and scope helpers -------------------------------------
 
     @contextmanager
     def _read(self) -> Iterator:
         try:
             with self._database.transaction() as connection:
+                yield connection
+        except BusyError as exc:
+            raise StorageBusy(str(exc), details=dict(exc.details)) from exc
+        except SchemaError as exc:
+            raise UnsupportedSchema(str(exc), details=dict(exc.details)) from exc
+
+    @contextmanager
+    def _write(self) -> Iterator:
+        try:
+            with self._database.transaction(write=True) as connection:
                 yield connection
         except BusyError as exc:
             raise StorageBusy(str(exc), details=dict(exc.details)) from exc
@@ -210,6 +505,75 @@ class ContentService:
             workspace_id=scope.workspace_id,
             branch_id=scope.branch_id,
         )
+
+    @staticmethod
+    def _require_str(value, label: str) -> None:
+        if not isinstance(value, str):
+            raise InvalidArgument(
+                label + " must be a string",
+                details={label + "_type": type(value).__name__},
+            )
+
+    @staticmethod
+    def _require_positive_version(value) -> None:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise InvalidArgument(
+                "expected_version must be a positive integer",
+                details={"expected_version": value},
+            )
+
+    @staticmethod
+    def _require_document(entry: EntryRecord) -> None:
+        if entry.kind != "document":
+            raise NotDocument(
+                "operation requires a document",
+                details={"object_id": entry.object_id},
+            )
+
+    @staticmethod
+    def _new_entry(
+        scope: ContentScope,
+        object_id: str,
+        kind: str,
+        parent_id: str,
+        name: str,
+        position: int,
+        revision_id: str | None,
+        now: str,
+    ) -> EntryRecord:
+        return EntryRecord(
+            workspace_id=scope.workspace_id,
+            branch_id=scope.branch_id,
+            object_id=object_id,
+            kind=kind,
+            parent_id=parent_id,
+            name=name,
+            position=position,
+            version=1,
+            current_revision_id=revision_id,
+            metadata_json="{}",
+            created_at=now,
+            modified_at=now,
+            deleted_at=None,
+        )
+
+    @staticmethod
+    def _reject_active_sibling(repo: Repository, parent_id: str, name: str) -> None:
+        if repo.find_child(parent_id, name) is not None:
+            raise AlreadyExists(
+                "an active sibling already uses this name",
+                details={"parent_id": parent_id, "name": name},
+            )
+
+    @staticmethod
+    def _require_created(repo: Repository, object_id: str) -> EntryRecord:
+        entry = repo.get_entry(object_id)
+        if entry is None:  # pragma: no cover - defensive, insert just succeeded
+            raise UnsupportedSchema(
+                "created entry is missing",
+                details={"object_id": object_id},
+            )
+        return entry
 
     def _require_scope_root(
         self, repo: Repository, scope: ContentScope
@@ -340,6 +704,42 @@ class ContentService:
             modified_at=entry.modified_at,
             deleted_at=entry.deleted_at,
             metadata=self._metadata(entry),
+        )
+
+    def _document_snapshot(
+        self, repo: Repository, scope: ContentScope, entry: EntryRecord
+    ) -> DocumentSnapshot:
+        self._require_document(entry)
+        node = self._snapshot(repo, scope, entry)
+        revision_id = entry.current_revision_id
+        if not isinstance(revision_id, str) or revision_id == "":
+            raise UnsupportedSchema(
+                "document has no current revision",
+                details={"object_id": entry.object_id},
+            )
+        revision = repo.get_revision(entry.object_id, revision_id)
+        if revision is None:
+            raise UnsupportedSchema(
+                "document revision is missing",
+                details={
+                    "object_id": entry.object_id,
+                    "revision_id": revision_id,
+                },
+            )
+        return DocumentSnapshot(
+            id=node.id,
+            kind=node.kind,
+            name=node.name,
+            parent_id=node.parent_id,
+            position=node.position,
+            version=node.version,
+            path=node.path,
+            created_at=node.created_at,
+            modified_at=node.modified_at,
+            deleted_at=node.deleted_at,
+            metadata=node.metadata,
+            content=revision.content,
+            revision_id=revision.id,
         )
 
     def _display_path(

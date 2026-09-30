@@ -33,8 +33,11 @@ __all__ = [
     "TempPathTestCase",
     "copy_sample_data",
     "create_schema_database",
+    "entry_state",
+    "revision_state",
     "seed_content_read_fixture",
     "seed_repository_fixture",
+    "table_counts",
 ]
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -87,6 +90,52 @@ def copy_sample_data(destination: Path) -> Path:
         shutil.rmtree(destination)
     shutil.copytree(SAMPLE_DATA, destination)
     return destination
+
+
+def table_counts(path: Path) -> dict:
+    """Return a row count for each content table (test observation helper)."""
+
+    tables = (
+        "workspaces",
+        "objects",
+        "branches",
+        "entries",
+        "document_revisions",
+        "legacy_imports",
+    )
+    with Database(path).transaction() as connection:
+        return {
+            table: connection.execute(
+                f"SELECT COUNT(*) FROM {table}"
+            ).fetchone()[0]
+            for table in tables
+        }
+
+
+def entry_state(path: Path, object_id: str) -> dict | None:
+    """Return the stored ``entries`` row for *object_id* (or ``None``)."""
+
+    with Database(path).transaction() as connection:
+        row = connection.execute(
+            "SELECT workspace_id, branch_id, object_id, parent_id, name, position, "
+            "version, current_revision_id, metadata_json, created_at, modified_at, "
+            "deleted_at FROM entries WHERE object_id = ?",
+            (object_id,),
+        ).fetchone()
+    return None if row is None else dict(row)
+
+
+def revision_state(path: Path, object_id: str) -> list:
+    """Return stored revisions for *object_id* in creation order."""
+
+    with Database(path).transaction() as connection:
+        rows = connection.execute(
+            "SELECT id, workspace_id, object_id, parent_revision_id, content, "
+            "created_at FROM document_revisions WHERE object_id = ? "
+            "ORDER BY created_at, id",
+            (object_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 #: Timestamp shared by every fixture row (UTC ISO 8601).

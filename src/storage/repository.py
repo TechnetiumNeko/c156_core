@@ -17,12 +17,14 @@ import sqlite3
 from typing import Iterable
 
 from ..core.errors import UnsupportedSchema
+from .errors import ConstraintError
 from .records import EntryRecord, RevisionRecord
 
 __all__ = [
     "Repository",
     "insert_branch",
     "insert_workspace",
+    "is_sibling_name_conflict",
     "lookup_default_main",
 ]
 
@@ -131,6 +133,21 @@ def _entry_record(row: sqlite3.Row) -> EntryRecord:
         modified_at=row["modified_at"],
         deleted_at=row["deleted_at"],
     )
+
+
+def is_sibling_name_conflict(error: ConstraintError) -> bool:
+    """Return whether *error* is the active-sibling NAME unique index.
+
+    Only this one index means a duplicate name.  The sibling position index,
+    the single-root index and the branch name index are different constraints
+    and must never be reported as :class:`AlreadyExists`.
+    """
+
+    if getattr(error, "constraint", None) != "unique":
+        return False
+    details = getattr(error, "details", None) or {}
+    message = str(details.get("sqlite_message", "")) or str(error)
+    return "entries.name" in message
 
 
 # -- management helpers -----------------------------------------------------
