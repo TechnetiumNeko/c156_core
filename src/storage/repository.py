@@ -13,19 +13,24 @@ loop forever on damaged data.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from typing import Iterable
 
-from ..core.errors import UnsupportedSchema
-from .errors import ConstraintError
+from ..core.errors import InvalidArgument, UnsupportedSchema
+from ..core.json_values import json_equal, validate_metadata
+from .errors import ConstraintError, StorageError
 from .records import EntryRecord, RevisionRecord
 
 __all__ = [
     "Repository",
+    "get_import_report",
     "insert_branch",
+    "insert_import_report",
     "insert_workspace",
     "is_sibling_name_conflict",
     "lookup_default_main",
+    "verify_integrity",
 ]
 
 _ENTRY_COLUMNS = (
@@ -220,6 +225,208 @@ def lookup_default_main(connection: sqlite3.Connection) -> tuple[str, str]:
             details={"workspace_id": workspace_id, "main_count": len(branches)},
         )
     return (workspace_id, branches[0][0])
+
+
+def get_import_report(
+    connection: sqlite3.Connection, source_digest: str
+) -> dict | None:
+    """Return the persisted migration report for *source_digest*, or ``None``.
+
+    The report is the canonical strict-JSON payload written by
+    :func:`insert_import_report`; it is parsed back into an independent plain
+    dictionary.  A missing row means the source was never imported, while an
+    unreadable stored payload is a storage integrity failure.
+    """
+
+    if not isinstance(source_digest, str) or source_digest == "":
+        raise ValueError("source_digest must be a non-empty string")
+    row = connection.execute(
+        "SELECT source_digest, imported_at, object_count, document_count, report_json "
+        "FROM legacy_imports WHERE source_digest = ?",
+        (source_digest,),
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        value = json.loads(row["report_json"])
+    except (TypeError, ValueError) as exc:
+        raise StorageError(
+            "stored legacy import report is not valid JSON",
+            details={"source_digest": source_digest},
+        ) from exc
+    if not isinstance(value, dict):
+        raise StorageError(
+            "stored legacy import report is not a JSON object",
+            details={"source_digest": source_digest},
+        )
+    try:
+        validate_metadata(value, reject_reserved=False)
+        counts = value.get("counts")
+        if not isinstance(counts, dict) or not all((
+            value.get("source_digest") == row["source_digest"],
+            value.get("imported_at") == row["imported_at"],
+            json_equal(counts.get("objects"), row["object_count"]),
+            json_equal(counts.get("documents"), row["document_count"]),
+        )):
+            raise ValueError("report does not match its import record")
+    except (InvalidArgument, ValueError) as exc:
+        raise StorageError(
+            "stored legacy import report is inconsistent or not strict JSON",
+            details={"source_digest": source_digest},
+        ) from exc
+    return value
+
+
+def insert_import_report(
+    connection: sqlite3.Connection,
+    source_digest: str,
+    imported_at: str,
+    report: dict,
+) -> None:
+    """Persist one completed import in ``legacy_imports`` on the caller's connection.
+
+    The caller owns the transaction.  The report is serialised as canonical,
+    sort-keyed strict JSON so a later read round-trips to an equal dictionary.
+    """
+
+    if not isinstance(source_digest, str) or source_digest == "":
+        raise ValueError("source_digest must be a non-empty string")
+    if not isinstance(imported_at, str) or imported_at == "":
+        raise ValueError("imported_at must be a non-empty string")
+    if not isinstance(report, dict):
+        raise ValueError("report must be a dictionary")
+    counts = report.get("counts")
+    if not isinstance(counts, dict):
+        raise ValueError("report must contain a counts mapping")
+    object_count = counts.get("objects")
+    document_count = counts.get("documents")
+    if (
+        isinstance(object_count, bool)
+        or not isinstance(object_count, int)
+        or object_count < 0
+    ):
+        raise ValueError("report counts.objects must be a non-negative integer")
+    if (
+        isinstance(document_count, bool)
+        or not isinstance(document_count, int)
+        or document_count < 0
+    ):
+        raise ValueError("report counts.documents must be a non-negative integer")
+    try:
+        payload = json.dumps(
+            report,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("report is not strict JSON") from exc
+    connection.execute(
+        "INSERT INTO legacy_imports "
+        "(source_digest, imported_at, object_count, document_count, report_json) "
+        "VALUES (?,?,?,?,?)",
+        (source_digest, imported_at, object_count, document_count, payload),
+    )
+
+
+def verify_integrity(connection: sqlite3.Connection) -> None:
+    """Raise :class:`StorageError` unless the database is structurally sound.
+
+    The caller supplies a transaction connection.  Checks run in order:
+    ``PRAGMA integrity_check`` must return ``ok``, ``PRAGMA foreign_key_check``
+    must report no violations, and every entry must be reachable from its
+    branch root with active entries hanging off active folder parents.  Any
+    object without an entry in any branch is treated as an orphan.
+    """
+
+    result = connection.execute("PRAGMA integrity_check").fetchone()[0]
+    if result != "ok":
+        raise StorageError(
+            "database integrity_check failed", details={"result": result}
+        )
+    violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+    if violations:
+        raise StorageError(
+            "database foreign_key_check failed",
+            details={"violations": len(violations)},
+        )
+    branch_rows = connection.execute(
+        "SELECT workspace_id, id, root_object_id FROM branches"
+    ).fetchall()
+    if not branch_rows:
+        raise StorageError("database has no branch to anchor its directory tree")
+    covered: set[str] = set()
+    for branch in branch_rows:
+        workspace_id = branch["workspace_id"]
+        branch_id = branch["id"]
+        root_id = branch["root_object_id"]
+        rows = connection.execute(
+            "SELECT e.object_id, e.parent_id, e.deleted_at, o.kind "
+            "FROM entries AS e JOIN objects AS o "
+            "ON o.workspace_id = e.workspace_id AND o.id = e.object_id "
+            "WHERE e.workspace_id = ? AND e.branch_id = ?",
+            (workspace_id, branch_id),
+        ).fetchall()
+        by_id = {row["object_id"]: row for row in rows}
+        root = by_id.get(root_id)
+        if root is None or root["parent_id"] is not None:
+            raise StorageError(
+                "branch root entry is missing or has a parent",
+                details={"workspace_id": workspace_id, "branch_id": branch_id},
+            )
+        if root["kind"] != "folder":
+            raise StorageError(
+                "branch root entry is not a folder",
+                details={"workspace_id": workspace_id, "branch_id": branch_id},
+            )
+        children: dict[str | None, list[str]] = {}
+        for row in rows:
+            if row["parent_id"] is not None:
+                parent = by_id.get(row["parent_id"])
+                if parent is None:
+                    raise StorageError(
+                        "entry parent is missing",
+                        details={"object_id": row["object_id"]},
+                    )
+                if row["deleted_at"] is None and (
+                    parent["deleted_at"] is not None or parent["kind"] != "folder"
+                ):
+                    raise StorageError(
+                        "active entry has a non-active folder parent",
+                        details={
+                            "object_id": row["object_id"],
+                            "parent_id": row["parent_id"],
+                        },
+                    )
+            children.setdefault(row["parent_id"], []).append(row["object_id"])
+        seen: set[str] = set()
+        stack = [root_id]
+        while stack:
+            current = stack.pop()
+            if current in seen:
+                raise StorageError(
+                    "directory tree contains a cycle",
+                    details={"object_id": current},
+                )
+            seen.add(current)
+            stack.extend(children.get(current, ()))
+        if seen != set(by_id):
+            missing = sorted(set(by_id) - seen)
+            raise StorageError(
+                "entries are not reachable from the branch root",
+                details={"count": len(missing), "object_ids": missing[:10]},
+            )
+        covered.update(by_id)
+    objects = {
+        row[0] for row in connection.execute("SELECT id FROM objects").fetchall()
+    }
+    orphans = sorted(objects - covered)
+    if orphans:
+        raise StorageError(
+            "objects have no entry in any branch",
+            details={"count": len(orphans), "object_ids": orphans[:10]},
+        )
 
 
 class Repository:

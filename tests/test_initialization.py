@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from src.core import ContentScope, UnsupportedSchema
+from src.core import ContentScope, StorageBusy, UnsupportedSchema
 from src.services import ContentService
 from src.storage import Database
 import src.storage.management as management_module
@@ -33,6 +33,33 @@ def _entries(path):
 
 
 class TestInitializeDatabase(TempPathTestCase):
+    def test_post_commit_config_failure_retains_complete_database_and_recovers(self):
+        from src.storage.errors import SchemaError
+        path = self.temp_path()
+        with mock.patch.object(Database, "configure_runtime", side_effect=SchemaError("configure failed")):
+            with self.assertRaises(SchemaError):
+                initialize_database(path)
+        self.assertTrue(path.exists())
+        with Database(path).management_connection() as connection:
+            scope = validate_default_tree(connection)
+            before = [tuple(row) for row in connection.execute(_ENTRY_DUMP)]
+            self.assertEqual(connection.execute("PRAGMA journal_mode").fetchone()[0], "delete")
+        self.assertEqual(initialize_database(path), scope)
+        self.assertEqual(_entries(path), before)
+
+    def test_locked_existing_init_is_storage_busy(self):
+        path = self.temp_path()
+        initialize_database(path)
+        with Database(path).management_connection() as connection:
+            connection.execute("PRAGMA journal_mode = DELETE")
+            connection.execute("BEGIN EXCLUSIVE")
+            try:
+                with mock.patch.object(management_module, "Database", lambda path: Database(path, busy_timeout_ms=10)):
+                    with self.assertRaises(StorageBusy):
+                        initialize_database(path)
+            finally:
+                connection.execute("ROLLBACK")
+
     def test_initialize_creates_protocol_default_tree_and_wal(self):
         path = self.temp_path()
         scope = initialize_database(path)

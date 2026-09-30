@@ -7,8 +7,8 @@ This module opens those containers strictly read-only (``mode=ro`` plus
 ``src.file`` wrappers (whose constructors create tables), and returns immutable
 objects plus a strict-JSON migration report.
 
-No function here writes to the source tree, imports :mod:`src.file`, or touches
-the new content database.  The only side effects are reads.
+The scanner only reads the source tree and never imports :mod:`src.file`.
+The explicit migration coordinator builds and publishes the unified database.
 """
 
 from __future__ import annotations
@@ -18,18 +18,52 @@ import json
 import os
 import re
 import sqlite3
-from contextlib import contextmanager
+import uuid
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Mapping
 
-from ..core.errors import InvalidArgument, InvalidName, MigrationError
-from ..core.json_values import RESERVED_METADATA_KEYS, validate_metadata
+from ..core.errors import (
+    InvalidArgument,
+    InvalidName,
+    MigrationError,
+    StorageBusy,
+    UnsupportedSchema,
+)
+from ..core.json_values import (
+    RESERVED_METADATA_KEYS,
+    json_equal,
+    validate_metadata,
+)
 from ..core.paths import validate_name
-from .management import DEFAULT_TOP_LEVEL_NAMES
+from .database import Database
+from .errors import BusyError, StorageError
+from .management import DEFAULT_TOP_LEVEL_NAMES, validate_default_tree
+from .publication import publish_no_replace
+from .records import EntryRecord, RevisionRecord
+from .repository import (
+    Repository,
+    get_import_report,
+    insert_branch,
+    insert_import_report,
+    insert_workspace,
+    verify_integrity,
+)
+from .schema import SCHEMA_VERSION, create_schema
 
-__all__ = ["LegacyObject", "LegacyScan", "scan_legacy", "source_fingerprint"]
+__all__ = [
+    "LegacyObject",
+    "LegacyScan",
+    "migrate_legacy",
+    "scan_legacy",
+    "source_fingerprint",
+]
+
+#: Workspace and branch names used by the imported default tree.
+_WORKSPACE_NAME = "default"
+_BRANCH_NAME = "main"
 
 #: Virtual fullpath of the legacy root directory (the physical ``source``).
 ROOT_FULLPATH = "/data"
@@ -937,3 +971,506 @@ def scan_legacy(source: Path, *, target: Path, imported_at: str) -> LegacyScan:
         report=report,
         imported_at=imported_at,
     )
+
+
+# -- atomic import -----------------------------------------------------------
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _metadata_json(metadata: Mapping[str, Any]) -> str:
+    try:
+        return json.dumps(
+            metadata,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    except (TypeError, ValueError) as exc:
+        raise MigrationError(
+            "legacy metadata is not strict JSON",
+            details={"phase": "populate"},
+        ) from exc
+
+
+def _remove_temp_artifacts(temporary: Path) -> None:
+    """Remove only this migration's temporary database and its sidecars."""
+
+    for candidate in (
+        temporary,
+        Path(str(temporary) + "-journal"),
+        Path(str(temporary) + "-wal"),
+        Path(str(temporary) + "-shm"),
+    ):
+        try:
+            candidate.unlink()
+        except FileNotFoundError:
+            continue
+        except OSError:  # pragma: no cover - best-effort cleanup
+            continue
+
+
+def _create_temp(target: Path) -> Path:
+    """Create the exclusive ``<target>.migrate-<uuid>.tmp`` in the target parent."""
+
+    temporary = target.parent / (
+        target.name + ".migrate-" + str(uuid.uuid4()) + ".tmp"
+    )
+    descriptor = os.open(
+        temporary, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o644
+    )
+    os.close(descriptor)
+    return temporary
+
+
+def _open_migration_connection(temporary: Path) -> sqlite3.Connection:
+    """Open the temporary build database with rollback journal and FULL sync."""
+
+    connection = sqlite3.connect(str(temporary), isolation_level=None)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute("PRAGMA busy_timeout = 5000")
+    mode = connection.execute("PRAGMA journal_mode = DELETE").fetchone()[0]
+    if str(mode).lower() != "delete":  # pragma: no cover - defensive
+        connection.close()
+        raise MigrationError(
+            "migration temporary database did not start in rollback journal mode",
+            details={"journal_mode": mode, "path": str(temporary)},
+        )
+    connection.execute("PRAGMA synchronous = FULL")
+    connection.execute("BEGIN IMMEDIATE")
+    return connection
+
+
+def _close_migration_connection(connection: sqlite3.Connection) -> None:
+    try:
+        if connection.in_transaction:
+            connection.execute("ROLLBACK")
+    except sqlite3.Error:  # pragma: no cover - never mask the real error
+        pass
+    try:
+        connection.close()
+    except sqlite3.Error:  # pragma: no cover - never mask the real error
+        pass
+
+
+def _populate(
+    connection: sqlite3.Connection, scan: LegacyScan, imported_at: str
+) -> tuple[str, str]:
+    """Insert the whole imported tree inside the caller's transaction.
+
+    Order follows the schema references: workspace, every stable object,
+    branch, the initial revision of each document, then entries parents-first
+    (the scan is already pre-order) and finally the persisted import record.
+    """
+
+    create_schema(connection)
+    if not scan.objects:
+        raise MigrationError("legacy scan produced no objects")
+    workspace_id = str(uuid.uuid4())
+    branch_id = str(uuid.uuid4())
+    insert_workspace(connection, workspace_id, _WORKSPACE_NAME, imported_at)
+    repo = Repository(
+        connection, workspace_id=workspace_id, branch_id=branch_id
+    )
+    root_id = scan.objects[0].id
+    for item in scan.objects:
+        repo.insert_object(item.id, item.kind, item.created_at)
+    insert_branch(
+        connection, workspace_id, branch_id, _BRANCH_NAME, root_id, imported_at
+    )
+    revision_ids: dict[str, str] = {}
+    for item in scan.objects:
+        if item.kind != "document":
+            continue
+        revision_id = str(uuid.uuid4())
+        revision_ids[item.id] = revision_id
+        repo.insert_revision(
+            RevisionRecord(
+                id=revision_id,
+                workspace_id=workspace_id,
+                object_id=item.id,
+                parent_revision_id=None,
+                content=item.content if item.content is not None else "",
+                created_at=imported_at,
+            )
+        )
+    for item in scan.objects:
+        repo.insert_entry(
+            EntryRecord(
+                workspace_id=workspace_id,
+                branch_id=branch_id,
+                object_id=item.id,
+                kind=item.kind,
+                parent_id=item.parent_id,
+                name=item.name,
+                position=item.position,
+                version=1,
+                current_revision_id=revision_ids.get(item.id),
+                metadata_json=_metadata_json(item.metadata),
+                created_at=item.created_at,
+                modified_at=item.modified_at,
+                deleted_at=None,
+            )
+        )
+    insert_import_report(connection, scan.source_digest, imported_at, scan.report)
+    return workspace_id, branch_id
+
+
+def _verify_import_equivalence(
+    connection: sqlite3.Connection, scan: LegacyScan
+) -> None:
+    """Compare the freshly inserted rows byte-for-byte with the scan.
+
+    IDs, kind, parent, name, position, timestamps, metadata and every document
+    body (and its stored SHA-256) must match the read-only source exactly, and
+    the stored sibling order must reproduce the scan pre-order.
+    """
+
+    rows = connection.execute(
+        "SELECT e.object_id, e.parent_id, e.name, e.position, e.version, "
+        "e.current_revision_id, e.metadata_json, e.created_at, e.modified_at, "
+        "e.deleted_at, o.kind, o.created_at AS object_created_at "
+        "FROM entries AS e JOIN objects AS o "
+        "ON o.workspace_id = e.workspace_id AND o.id = e.object_id"
+    ).fetchall()
+    by_id = {row["object_id"]: row for row in rows}
+    if set(by_id) != {item.id for item in scan.objects}:
+        raise MigrationError(
+            "imported object ids do not match the legacy source",
+            details={"phase": "verify"},
+        )
+    for item in scan.objects:
+        row = by_id[item.id]
+        mismatches: dict[str, Any] = {}
+        if row["kind"] != item.kind:
+            mismatches["kind"] = row["kind"]
+        if row["parent_id"] != item.parent_id:
+            mismatches["parent_id"] = row["parent_id"]
+        if row["name"] != item.name:
+            mismatches["name"] = row["name"]
+        if row["position"] != item.position:
+            mismatches["position"] = row["position"]
+        if row["version"] != 1:
+            mismatches["version"] = row["version"]
+        if row["created_at"] != item.created_at:
+            mismatches["created_at"] = row["created_at"]
+        if row["object_created_at"] != item.created_at:
+            mismatches["object_created_at"] = row["object_created_at"]
+        if row["modified_at"] != item.modified_at:
+            mismatches["modified_at"] = row["modified_at"]
+        if row["deleted_at"] is not None:
+            mismatches["deleted_at"] = row["deleted_at"]
+        metadata = json.loads(row["metadata_json"])
+        if not json_equal(metadata, item.metadata):
+            mismatches["metadata"] = metadata
+        if mismatches:
+            raise MigrationError(
+                "imported object differs from the legacy source",
+                details={"phase": "verify", "object_id": item.id, **mismatches},
+            )
+        revision = connection.execute(
+            "SELECT id, parent_revision_id, content, created_at "
+            "FROM document_revisions WHERE object_id = ? AND id = ?",
+            (item.id, row["current_revision_id"]),
+        ).fetchone()
+        if item.kind == "document":
+            if revision is None:
+                raise MigrationError(
+                    "imported document has no current revision",
+                    details={"phase": "verify", "object_id": item.id},
+                )
+            expected_content = (
+                item.content if item.content is not None else ""
+            )
+            if revision["content"] != expected_content:
+                raise MigrationError(
+                    "imported document body differs from the legacy source",
+                    details={"phase": "verify", "object_id": item.id},
+                )
+            if revision["parent_revision_id"] is not None:
+                raise MigrationError(
+                    "imported initial revision unexpectedly has a parent",
+                    details={"phase": "verify", "object_id": item.id},
+                )
+            if revision["created_at"] != scan.imported_at:
+                raise MigrationError(
+                    "imported initial revision has the wrong creation time",
+                    details={"phase": "verify", "object_id": item.id},
+                )
+            expected_sha = hashlib.sha256(
+                expected_content.encode("utf-8")
+            ).hexdigest()
+            reported = next(
+                (
+                    entry
+                    for entry in scan.report["objects"]
+                    if entry["id"] == item.id
+                ),
+                None,
+            )
+            if reported is None or reported["content_sha256"] != expected_sha:
+                raise MigrationError(
+                    "imported document body hash does not match the report",
+                    details={"phase": "verify", "object_id": item.id},
+                )
+        elif revision is not None or row["current_revision_id"] is not None:
+            raise MigrationError(
+                "imported folder unexpectedly carries a revision",
+                details={"phase": "verify", "object_id": item.id},
+            )
+
+    children: dict[str | None, list[sqlite3.Row]] = {}
+    for row in rows:
+        children.setdefault(row["parent_id"], []).append(row)
+    order: list[str] = []
+
+    def walk(parent_id: str | None) -> None:
+        for child in sorted(
+            children.get(parent_id, ()), key=lambda row: row["position"]
+        ):
+            order.append(child["object_id"])
+            walk(child["object_id"])
+
+    walk(None)
+    if order != [item.id for item in scan.objects]:
+        raise MigrationError(
+            "imported sibling order does not match the legacy source",
+            details={"phase": "verify"},
+        )
+
+
+def _verify_source_unchanged(
+    source: Path, target: Path, scan: LegacyScan, imported_at: str
+) -> None:
+    """Re-scan the source before COMMIT and require the same digest and shape.
+
+    A file whose bytes changed and an added directory (even an empty one) both
+    abort, because the second scan walks the directories and requires a
+    ``.folder`` in each while the digest covers every regular file.
+    """
+
+    try:
+        final = scan_legacy(source, target=target, imported_at=imported_at)
+    except MigrationError as exc:
+        raise MigrationError(
+            "legacy source changed shape during import",
+            details={
+                "phase": "pre_commit",
+                "reason": exc.message,
+                **exc.details,
+            },
+        ) from exc
+    if final.source_digest != scan.source_digest:
+        raise MigrationError(
+            "legacy source digest changed during import",
+            details={
+                "phase": "pre_commit",
+                "expected": scan.source_digest,
+                "actual": final.source_digest,
+            },
+        )
+
+
+def _finish_import(source: Path, target: Path, report: dict) -> dict:
+    """Idempotently enable WAL and validate a published import.
+
+    A lock is surfaced as :class:`StorageBusy`; any other runtime-configuration
+    failure keeps the complete target in place and raises a
+    :class:`MigrationError` tagged ``phase='configure_runtime'`` so the caller
+    can rerun the same command.
+    """
+
+    database = Database(target)
+    rerun_command = ["python", "-m", "src.storage", "migrate-legacy",
+                     "--source", str(source), "--database", str(target)]
+    try:
+        database.configure_runtime()
+    except BusyError as exc:
+        raise StorageBusy(
+            str(exc),
+            details={"phase": "configure_runtime", "target": str(target),
+                     "rerun_command": rerun_command},
+        ) from exc
+    except Exception as exc:  # noqa: BLE001 - recoverable config failure
+        raise MigrationError(
+            "migration target runtime configuration failed",
+            details={
+                "phase": "configure_runtime",
+                "target": str(target),
+                "reason": str(exc),
+                "rerun_command": rerun_command,
+            },
+        ) from exc
+    try:
+        with database.management_connection() as connection:
+            connection.execute("BEGIN")
+            try:
+                validate_default_tree(connection)
+                verify_integrity(connection)
+            finally:
+                if connection.in_transaction:
+                    connection.execute("ROLLBACK")
+    except BusyError as exc:
+        raise StorageBusy(
+            str(exc),
+            details={"phase": "validate_target", "target": str(target)},
+        ) from exc
+    except UnsupportedSchema:
+        raise
+    except (sqlite3.DatabaseError, StorageError) as exc:
+        raise MigrationError(
+            "migration target failed integrity validation",
+            details={
+                "phase": "validate_target",
+                "target": str(target),
+                "reason": str(exc),
+            },
+        ) from exc
+    return report
+
+
+def _load_matching_report(target: Path, source_digest: str) -> dict | None:
+    """Return the persisted report for *source_digest*, or ``None``.
+
+    A missing table/row, a non-database file and a corrupt file all mean "this
+    target is not an import of the source".  A lock surfaces as
+    :class:`BusyError` and a structurally unsound import surfaces as a storage
+    error, so neither is silently treated as unmatched.
+    """
+
+    if not target.is_file():
+        return None
+    database = Database(target)
+    with ExitStack() as stack:
+        try:
+            connection = stack.enter_context(database.management_connection())
+        except BusyError:
+            raise
+        except StorageError:
+            return None
+        try:
+            connection.execute("BEGIN")
+            report = get_import_report(connection, source_digest)
+            if report is None:
+                return None
+            version = connection.execute("PRAGMA user_version").fetchone()[0]
+            if version != SCHEMA_VERSION:
+                raise UnsupportedSchema(
+                    "unsupported database protocol version",
+                    details={"expected": SCHEMA_VERSION, "actual": version, "path": str(target)},
+                )
+            verify_integrity(connection)
+            validate_default_tree(connection)
+        except sqlite3.OperationalError as exc:
+            if "locked" in str(exc).lower() or "busy" in str(exc).lower():
+                raise BusyError(
+                    str(exc), details={"path": str(target)}
+                ) from exc
+            return None
+        except sqlite3.DatabaseError:
+            return None
+        finally:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+    return report
+
+
+def _repeat_import(source: Path, target: Path) -> dict:
+    """Validate an existing import and finish its runtime configuration."""
+
+    digest = source_fingerprint(source, target=target)
+    try:
+        report = _load_matching_report(target, digest)
+    except BusyError:
+        raise
+    except StorageError as exc:
+        raise MigrationError(
+            "existing migration target failed integrity validation",
+            details={
+                "phase": "validate_target",
+                "target": str(target),
+                "reason": exc.message,
+            },
+        ) from exc
+    if report is None:
+        raise MigrationError(
+            "target is not a completed import of this source",
+            details={
+                "phase": "validate_target",
+                "target": str(target),
+                "source_digest": digest,
+            },
+        )
+    # File digests alone cannot detect newly added empty directories.  Validate
+    # the whole legacy directory set with the original batch timestamp too.
+    current = scan_legacy(source, target=target, imported_at=report["imported_at"])
+    if current.source_digest != digest:
+        raise MigrationError("legacy source changed during recovery",
+                             details={"phase": "validate_source"})
+    return _finish_import(source, target, report)
+
+
+def _fresh_import(source: Path, target: Path) -> dict:
+    """Scan, build, verify, publish and configure one brand-new target."""
+
+    imported_at = _utc_now()
+    scan = scan_legacy(source, target=target, imported_at=imported_at)
+    temporary = _create_temp(target)
+    connection: sqlite3.Connection | None = None
+    published = False
+    try:
+        connection = _open_migration_connection(temporary)
+        _populate(connection, scan, imported_at)
+        verify_integrity(connection)
+        _verify_import_equivalence(connection, scan)
+        _verify_source_unchanged(source, target, scan, imported_at)
+        connection.execute("COMMIT")
+        connection.close()
+        connection = None
+        try:
+            publish_no_replace(temporary, target)
+            published = True
+        except FileExistsError:
+            _remove_temp_artifacts(temporary)
+            temporary = None
+            # A concurrent process won the publish race; adopt its completed
+            # same-source import instead of overwriting it.
+            return _repeat_import(source, target)
+        except OSError as exc:
+            raise MigrationError(
+                "migration target could not be published atomically",
+                details={"phase": "publish", "target": str(target)},
+            ) from exc
+    except BaseException:
+        if connection is not None:
+            _close_migration_connection(connection)
+        if not published and temporary is not None:
+            _remove_temp_artifacts(temporary)
+        raise
+    return _finish_import(source, target, scan.report)
+
+
+def migrate_legacy(source: Path, database: Path) -> dict:
+    """Atomically import one legacy tree into a new content database.
+
+    Returns the persistent strict-JSON migration report.  An existing target
+    is never overwritten: it is accepted only when it already records a
+    completed import of the same source, in which case the stored report is
+    returned after validation and idempotent WAL configuration.  A different
+    source, an unknown target, a lock or a schema problem keeps the target
+    untouched and raises the matching domain error.
+    """
+
+    source_path = Path(source)
+    target_path = Path(database)
+    try:
+        if target_path.exists():
+            return _repeat_import(source_path, target_path)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        return _fresh_import(source_path, target_path)
+    except BusyError as exc:
+        raise StorageBusy(str(exc), details=dict(exc.details)) from exc

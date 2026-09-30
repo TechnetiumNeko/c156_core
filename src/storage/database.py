@@ -175,6 +175,8 @@ class Database:
         connection = self._open()
         try:
             yield connection
+        except sqlite3.Error as exc:
+            raise _translate(exc) from exc
         finally:
             connection.close()
 
@@ -185,6 +187,9 @@ class Database:
             try:
                 version = connection.execute("PRAGMA user_version").fetchone()[0]
             except sqlite3.DatabaseError as exc:
+                translated = _translate(exc)
+                if isinstance(translated, BusyError):
+                    raise translated from exc
                 raise SchemaError(
                     "database file is not a usable content database",
                     details={"path": str(self.path)},
@@ -204,6 +209,11 @@ class Database:
             try:
                 result = connection.execute("PRAGMA journal_mode = WAL").fetchone()[0]
             except sqlite3.Error as exc:
+                translated = _translate(exc)
+                if isinstance(translated, BusyError):
+                    # A held lock is a transient busy condition, not a schema
+                    # failure; management code maps it to the domain StorageBusy.
+                    raise translated from exc
                 raise SchemaError(
                     "could not enable WAL journal mode",
                     details={"path": str(self.path)},

@@ -18,7 +18,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..core.errors import UnsupportedSchema
+from ..core.errors import StorageBusy, UnsupportedSchema
 from ..core.models import ContentScope
 from .database import Database
 from .errors import BusyError, StorageError
@@ -151,15 +151,18 @@ def _validate_existing(path: Path) -> ContentScope:
             scope = validate_default_tree(connection)
     except UnsupportedSchema:
         raise
-    except BusyError:
-        raise
+    except BusyError as exc:
+        raise StorageBusy(str(exc), details=dict(exc.details)) from exc
     except (sqlite3.DatabaseError, StorageError) as exc:
         raise UnsupportedSchema(
             "database file is not a usable content database",
             details={"path": str(path)},
         ) from exc
 
-    database.configure_runtime()
+    try:
+        database.configure_runtime()
+    except BusyError as exc:
+        raise StorageBusy(str(exc), details=dict(exc.details)) from exc
     return scope
 
 
@@ -182,11 +185,19 @@ def initialize_database(database: Path) -> ContentScope:
 
     try:
         scope = _create_default_tree(path)
+    except BusyError as exc:
+        _remove_new_artifacts(path)
+        raise StorageBusy(str(exc), details=dict(exc.details)) from exc
     except BaseException:
         _remove_new_artifacts(path)
         raise
     database = Database(path)
-    database.configure_runtime()
+    try:
+        database.configure_runtime()
+    except BusyError as exc:
+        # The committed database is complete and stays in place so a rerun can
+        # finish the WAL configuration without rebuilding content.
+        raise StorageBusy(str(exc), details=dict(exc.details)) from exc
     return scope
 
 

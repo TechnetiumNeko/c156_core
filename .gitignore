@@ -30,6 +30,15 @@ dist/
 *-wal
 *-shm
 
+# Unified runtime content database (legacy .folder containers stay tracked)
+/data/c156.sqlite
+
+# Atomic migration temporary database namespace and its sidecars
+*.migrate-*.tmp
+*.migrate-*.tmp-journal
+*.migrate-*.tmp-wal
+*.migrate-*.tmp-shm
+
 # Operating system files
 .DS_Store
 Thumbs.db
