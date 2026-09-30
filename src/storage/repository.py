@@ -336,8 +336,10 @@ def verify_integrity(connection: sqlite3.Connection) -> None:
     The caller supplies a transaction connection.  Checks run in order:
     ``PRAGMA integrity_check`` must return ``ok``, ``PRAGMA foreign_key_check``
     must report no violations, and every entry must be reachable from its
-    branch root with active entries hanging off active folder parents.  Any
-    object without an entry in any branch is treated as an orphan.
+    branch root with active entries hanging off active folder parents. Every
+    retained entry, including soft-deleted entries, must have strict extension
+    metadata and valid current revision state. Any object without an entry in
+    any branch is treated as an orphan.
     """
 
     result = connection.execute("PRAGMA integrity_check").fetchone()[0]
@@ -362,9 +364,13 @@ def verify_integrity(connection: sqlite3.Connection) -> None:
         branch_id = branch["id"]
         root_id = branch["root_object_id"]
         rows = connection.execute(
-            "SELECT e.object_id, e.parent_id, e.deleted_at, o.kind "
+            "SELECT e.object_id, e.parent_id, e.deleted_at, o.kind, "
+            "e.current_revision_id, e.metadata_json, r.id AS matched_revision_id "
             "FROM entries AS e JOIN objects AS o "
             "ON o.workspace_id = e.workspace_id AND o.id = e.object_id "
+            "LEFT JOIN document_revisions AS r "
+            "ON r.id = e.current_revision_id AND r.workspace_id = e.workspace_id "
+            "AND r.object_id = e.object_id "
             "WHERE e.workspace_id = ? AND e.branch_id = ?",
             (workspace_id, branch_id),
         ).fetchall()
@@ -382,6 +388,20 @@ def verify_integrity(connection: sqlite3.Connection) -> None:
             )
         children: dict[str | None, list[str]] = {}
         for row in rows:
+            details = {"workspace_id": workspace_id, "branch_id": branch_id,
+                       "object_id": row["object_id"]}
+            if row["kind"] == "document" and row["matched_revision_id"] is None:
+                raise StorageError("document entry has no valid current revision",
+                                   details=details)
+            if row["kind"] == "folder" and row["current_revision_id"] is not None:
+                raise StorageError("folder entry must not carry a current revision",
+                                   details=details)
+            try:
+                metadata = json.loads(row["metadata_json"])
+                validate_metadata(metadata)
+            except (InvalidArgument, TypeError, ValueError) as exc:
+                raise StorageError("entry extension metadata is not a strict JSON object",
+                                   details=details) from exc
             if row["parent_id"] is not None:
                 parent = by_id.get(row["parent_id"])
                 if parent is None:

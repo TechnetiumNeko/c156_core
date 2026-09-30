@@ -343,6 +343,92 @@ class RepeatImportTests(LegacyImportTestCase):
         configure.assert_not_called()
         self.assertEqual(self.target.read_bytes(), before)
 
+    def _assert_invalid_target_rejected_unchanged(self, target):
+        before = target.read_bytes()
+        with mock.patch.object(Database, "configure_runtime") as configure:
+            with self.assertRaises(MigrationError) as caught:
+                migrate_legacy(self.source, target)
+        configure.assert_not_called()
+        self.assertEqual(caught.exception.details["phase"], "validate_target")
+        self.assertIn("reason", caught.exception.details)
+        self.assertEqual(target.read_bytes(), before)
+        with Database(target).management_connection() as connection:
+            self.assertEqual(connection.execute("PRAGMA journal_mode").fetchone()[0], "delete")
+        self.assertFalse(Path(str(target) + "-journal").exists())
+        self.assertFalse(Path(str(target) + "-wal").exists())
+
+    def test_recovery_rejects_document_without_current_revision(self):
+        for deleted in (False, True):
+            with self.subTest(deleted=deleted):
+                target = self.temp_root / f"missing-revision-{deleted}.sqlite"
+                migrate_legacy(self.source, target)
+                with Database(target).management_connection() as connection:
+                    connection.execute("PRAGMA journal_mode = DELETE")
+                    connection.execute(
+                        "UPDATE entries SET current_revision_id = NULL, deleted_at = ? WHERE object_id = ?",
+                        (READ_SCAN_AT if deleted else None, SAMPLE_DOCUMENT_ID),
+                    )
+                self._assert_invalid_target_rejected_unchanged(target)
+
+    def test_recovery_rejects_revision_from_other_object_or_folder_revision(self):
+        for folder in (False, True):
+            with self.subTest(folder=folder):
+                target = self.temp_root / f"wrong-revision-{folder}.sqlite"
+                migrate_legacy(self.source, target)
+                service = ContentService(Database(target))
+                scope = service.default_scope()
+                other = service.create_document(scope, scope.root_id, "other", content="body")
+                connection = sqlite3.connect(target, isolation_level=None)
+                try:
+                    connection.execute("PRAGMA journal_mode = DELETE")
+                    object_id = scope.root_id if folder else SAMPLE_DOCUMENT_ID
+                    revision_id = other.revision_id
+                    if folder:
+                        # Even a revision matching the folder's workspace/object
+                        # passes the FK but must fail the content type invariant.
+                        revision_id = "00000000-0000-4000-8000-000000000009"
+                        connection.execute(
+                            "INSERT INTO document_revisions (id, workspace_id, object_id, content, created_at) VALUES (?,?,?,?,?)",
+                            (revision_id, scope.workspace_id, object_id, "invalid folder body", READ_SCAN_AT),
+                        )
+                    connection.execute("UPDATE entries SET current_revision_id = ? WHERE object_id = ?",
+                                       (revision_id, object_id))
+                finally:
+                    connection.close()
+                self._assert_invalid_target_rejected_unchanged(target)
+
+    def test_recovery_rejects_invalid_extension_metadata_on_retained_entries(self):
+        invalid_values = ('[]', '{"nested":{"value":NaN}}', '{"nested":[Infinity]}',
+                          '{"version":1}', '{"nested":{"value":1e999}}')
+        for deleted in (False, True):
+            for index, payload in enumerate(invalid_values):
+                with self.subTest(deleted=deleted, payload=payload):
+                    target = self.temp_root / f"metadata-{deleted}-{index}.sqlite"
+                    migrate_legacy(self.source, target)
+                    with Database(target).management_connection() as connection:
+                        connection.execute("PRAGMA journal_mode = DELETE")
+                        connection.execute("UPDATE entries SET metadata_json = ?, deleted_at = ? WHERE object_id = ?",
+                                           (payload, READ_SCAN_AT if deleted else None, SAMPLE_DOCUMENT_ID))
+                    self._assert_invalid_target_rejected_unchanged(target)
+
+    def test_repeat_import_preserves_legal_edits_metadata_and_soft_deletion(self):
+        report = migrate_legacy(self.source, self.target)
+        service = ContentService(Database(self.target))
+        scope = service.default_scope()
+        doc = service.read_document(scope, SAMPLE_DOCUMENT_ID)
+        saved = service.save_document(scope, doc.id, "later edit", expected_revision_id=doc.revision_id)
+        updated = service.set_metadata(scope, doc.id, {"nested": {"values": [1, None, True]}},
+                                       expected_version=saved.version)
+        service.delete_node(scope, doc.id, expected_version=updated.version)
+        with Database(self.target).management_connection() as connection:
+            connection.execute("PRAGMA journal_mode = DELETE")
+            before = [tuple(row) for row in connection.execute("SELECT * FROM entries ORDER BY object_id")]
+            revisions = [tuple(row) for row in connection.execute("SELECT * FROM document_revisions ORDER BY id")]
+        self.assertEqual(migrate_legacy(self.source, self.target), report)
+        with Database(self.target).transaction() as connection:
+            self.assertEqual([tuple(row) for row in connection.execute("SELECT * FROM entries ORDER BY object_id")], before)
+            self.assertEqual([tuple(row) for row in connection.execute("SELECT * FROM document_revisions ORDER BY id")], revisions)
+
     def test_locked_target_raises_storage_busy(self) -> None:
         migrate_legacy(self.source, self.target)
         raw = sqlite3.connect(self.target)

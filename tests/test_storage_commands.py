@@ -121,9 +121,11 @@ class StorageCommandTests(TempPathTestCase):
         self.assertTrue(target.exists())
 
     def test_missing_arguments_exit_nonzero(self) -> None:
-        with self.assertRaises(SystemExit) as caught:
+        stderr = io.StringIO()
+        with redirect_stderr(stderr), self.assertRaises(SystemExit) as caught:
             main(["init"])
         self.assertNotEqual(caught.exception.code, 0)
+        self.assertIn("the following arguments are required: --database", stderr.getvalue())
 
     def test_module_entry_point(self) -> None:
         path = self.temp_path()
