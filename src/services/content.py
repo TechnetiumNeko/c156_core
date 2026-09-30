@@ -24,10 +24,12 @@ from ..core.errors import (
     AlreadyExists,
     Conflict,
     InvalidArgument,
+    InvalidMove,
     NotDirectory,
     NotDocument,
     NotFound,
     PathOutsideRoot,
+    ProtectedNode,
     StorageBusy,
     UnsupportedSchema,
 )
@@ -41,7 +43,7 @@ from ..core.models import (
 from ..core.paths import parse_path, validate_name
 from ..storage.database import Database
 from ..storage.errors import BusyError, ConstraintError, SchemaError
-from ..storage.management import validate_default_tree
+from ..storage.management import DEFAULT_TOP_LEVEL_NAMES, validate_default_tree
 from ..storage.records import EntryRecord, RevisionRecord
 from ..storage.repository import Repository, is_sibling_name_conflict
 
@@ -222,40 +224,34 @@ class ContentService:
         self._require_str(parent_id, "parent_id")
         validate_name(name)
         now = _utc_now()
-        try:
-            with self._write() as connection:
-                repo = self._repository(connection, scope)
-                self._require_scope_root(repo, scope)
-                parent = self._require_valid_entry(
-                    repo, scope, parent_id, require_folder=True
+        with self._write_with_name_translation(
+            {"parent_id": parent_id, "name": name}
+        ) as connection:
+            repo = self._repository(connection, scope)
+            self._require_scope_root(repo, scope)
+            parent = self._require_valid_entry(
+                repo, scope, parent_id, require_folder=True
+            )
+            self._reject_active_sibling(repo, parent_id, name)
+            object_id = str(uuid.uuid4())
+            position = repo.next_position(parent_id)
+            repo.insert_object(object_id, "folder", now)
+            repo.insert_entry(
+                self._new_entry(
+                    scope,
+                    object_id,
+                    "folder",
+                    parent_id,
+                    name,
+                    position,
+                    None,
+                    now,
                 )
-                self._reject_active_sibling(repo, parent_id, name)
-                object_id = str(uuid.uuid4())
-                position = repo.next_position(parent_id)
-                repo.insert_object(object_id, "folder", now)
-                repo.insert_entry(
-                    self._new_entry(
-                        scope,
-                        object_id,
-                        "folder",
-                        parent_id,
-                        name,
-                        position,
-                        None,
-                        now,
-                    )
-                )
-                repo.touch_entries([parent.object_id], now)
-                return self._snapshot(
-                    repo, scope, self._require_created(repo, object_id)
-                )
-        except ConstraintError as exc:
-            if is_sibling_name_conflict(exc):
-                raise AlreadyExists(
-                    "an active sibling already uses this name",
-                    details={"parent_id": parent_id, "name": name},
-                ) from exc
-            raise
+            )
+            repo.touch_entries([parent.object_id], now)
+            return self._snapshot(
+                repo, scope, self._require_created(repo, object_id)
+            )
 
     def create_document(
         self,
@@ -271,51 +267,45 @@ class ContentService:
         validate_name(name)
         self._require_str(content, "content")
         now = _utc_now()
-        try:
-            with self._write() as connection:
-                repo = self._repository(connection, scope)
-                self._require_scope_root(repo, scope)
-                parent = self._require_valid_entry(
-                    repo, scope, parent_id, require_folder=True
+        with self._write_with_name_translation(
+            {"parent_id": parent_id, "name": name}
+        ) as connection:
+            repo = self._repository(connection, scope)
+            self._require_scope_root(repo, scope)
+            parent = self._require_valid_entry(
+                repo, scope, parent_id, require_folder=True
+            )
+            self._reject_active_sibling(repo, parent_id, name)
+            object_id = str(uuid.uuid4())
+            revision_id = str(uuid.uuid4())
+            position = repo.next_position(parent_id)
+            repo.insert_object(object_id, "document", now)
+            repo.insert_revision(
+                RevisionRecord(
+                    id=revision_id,
+                    workspace_id=scope.workspace_id,
+                    object_id=object_id,
+                    parent_revision_id=None,
+                    content=content,
+                    created_at=now,
                 )
-                self._reject_active_sibling(repo, parent_id, name)
-                object_id = str(uuid.uuid4())
-                revision_id = str(uuid.uuid4())
-                position = repo.next_position(parent_id)
-                repo.insert_object(object_id, "document", now)
-                repo.insert_revision(
-                    RevisionRecord(
-                        id=revision_id,
-                        workspace_id=scope.workspace_id,
-                        object_id=object_id,
-                        parent_revision_id=None,
-                        content=content,
-                        created_at=now,
-                    )
+            )
+            repo.insert_entry(
+                self._new_entry(
+                    scope,
+                    object_id,
+                    "document",
+                    parent_id,
+                    name,
+                    position,
+                    revision_id,
+                    now,
                 )
-                repo.insert_entry(
-                    self._new_entry(
-                        scope,
-                        object_id,
-                        "document",
-                        parent_id,
-                        name,
-                        position,
-                        revision_id,
-                        now,
-                    )
-                )
-                repo.touch_entries([parent.object_id], now)
-                return self._document_snapshot(
-                    repo, scope, self._require_created(repo, object_id)
-                )
-        except ConstraintError as exc:
-            if is_sibling_name_conflict(exc):
-                raise AlreadyExists(
-                    "an active sibling already uses this name",
-                    details={"parent_id": parent_id, "name": name},
-                ) from exc
-            raise
+            )
+            repo.touch_entries([parent.object_id], now)
+            return self._document_snapshot(
+                repo, scope, self._require_created(repo, object_id)
+            )
 
     def read_document(
         self, scope: ContentScope, object_id: str
@@ -476,6 +466,147 @@ class ContentService:
                 repo, scope, self._require_created(repo, object_id)
             )
 
+    def rename_node(
+        self,
+        scope: ContentScope,
+        object_id: str,
+        name: str,
+        *,
+        expected_version: int,
+    ) -> NodeSnapshot:
+        """Rename one active node, preserving identity, position and body.
+
+        Scope, active type, expected version, protected identity and the target
+        sibling name are checked in one ``BEGIN IMMEDIATE`` transaction before
+        the no-op decision, so a stale or protected rename always fails even
+        when the requested name equals the current one.
+        """
+
+        self._require_str(object_id, "object_id")
+        validate_name(name)
+        self._require_positive_version(expected_version)
+        now = _utc_now()
+        details = {"object_id": object_id, "name": name}
+        with self._write_with_name_translation(details) as connection:
+            repo = self._repository(connection, scope)
+            self._require_scope_root(repo, scope)
+            entry = self._require_valid_entry(repo, scope, object_id)
+            if entry.version != expected_version:
+                raise Conflict(
+                    "entry version does not match the expected version",
+                    details={
+                        "object_id": object_id,
+                        "expected_version": expected_version,
+                        "current_version": entry.version,
+                    },
+                )
+            self._require_unprotected(repo, entry)
+            if entry.name == name:
+                return self._snapshot(repo, scope, entry)
+            parent_id = entry.parent_id
+            if parent_id is None:  # pragma: no cover - branch root is protected
+                raise ProtectedNode(
+                    "branch root cannot be renamed",
+                    details={"object_id": object_id},
+                )
+            self._reject_other_active_sibling(repo, parent_id, name, object_id)
+            affected = repo.update_entry(
+                object_id,
+                {"name": name, "version": entry.version + 1, "modified_at": now},
+                expected_version=entry.version,
+            )
+            if affected != 1:
+                raise Conflict(
+                    "entry changed while renaming",
+                    details={"object_id": object_id},
+                )
+            repo.touch_entries([parent_id], now)
+            return self._snapshot(
+                repo, scope, self._require_created(repo, object_id)
+            )
+
+    def move_node(
+        self,
+        scope: ContentScope,
+        object_id: str,
+        parent_id: str,
+        *,
+        expected_version: int,
+        name: str | None = None,
+    ) -> NodeSnapshot:
+        """Move one active node, optionally renaming it, in one transaction.
+
+        A move to a different parent appends the node to that parent.  A move
+        within the same parent that only changes the name behaves like a rename
+        and keeps the position.  A move to the same parent with the same name is
+        a true no-op after all scope, version, protection and cycle checks.
+        """
+
+        self._require_str(object_id, "object_id")
+        self._require_str(parent_id, "parent_id")
+        self._require_positive_version(expected_version)
+        if name is not None:
+            validate_name(name)
+        now = _utc_now()
+        details = {
+            "object_id": object_id,
+            "parent_id": parent_id,
+            "name": name,
+        }
+        with self._write_with_name_translation(details) as connection:
+            repo = self._repository(connection, scope)
+            self._require_scope_root(repo, scope)
+            entry = self._require_valid_entry(repo, scope, object_id)
+            self._require_valid_entry(
+                repo, scope, parent_id, require_folder=True
+            )
+            if entry.version != expected_version:
+                raise Conflict(
+                    "entry version does not match the expected version",
+                    details={
+                        "object_id": object_id,
+                        "expected_version": expected_version,
+                        "current_version": entry.version,
+                    },
+                )
+            self._require_unprotected(repo, entry)
+            for record in repo.ancestors(parent_id):
+                if record.object_id == object_id:
+                    raise InvalidMove(
+                        "cannot move a node into itself or a descendant",
+                        details={"object_id": object_id, "parent_id": parent_id},
+                    )
+            new_name = entry.name if name is None else name
+            if parent_id == entry.parent_id and new_name == entry.name:
+                return self._snapshot(repo, scope, entry)
+            self._reject_other_active_sibling(
+                repo, parent_id, new_name, object_id
+            )
+            changes: dict = {
+                "name": new_name,
+                "version": entry.version + 1,
+                "modified_at": now,
+            }
+            parents = [entry.parent_id]
+            if parent_id != entry.parent_id:
+                changes["parent_id"] = parent_id
+                changes["position"] = repo.next_position(parent_id)
+                parents.append(parent_id)
+            affected = repo.update_entry(
+                object_id, changes, expected_version=entry.version
+            )
+            if affected != 1:
+                raise Conflict(
+                    "entry changed while moving",
+                    details={"object_id": object_id},
+                )
+            repo.touch_entries(
+                [parent for parent in parents if parent is not None], now
+            )
+            return self._snapshot(
+                repo, scope, self._require_created(repo, object_id)
+            )
+
     # -- transaction and scope helpers -------------------------------------
 
     @contextmanager
@@ -497,6 +628,26 @@ class ContentService:
             raise StorageBusy(str(exc), details=dict(exc.details)) from exc
         except SchemaError as exc:
             raise UnsupportedSchema(str(exc), details=dict(exc.details)) from exc
+
+    @contextmanager
+    def _write_with_name_translation(self, details: dict) -> Iterator:
+        """Run one write transaction, mapping only the sibling name index.
+
+        A duplicate active sibling name becomes :class:`AlreadyExists`; every
+        other integrity failure (position, root uniqueness, foreign key, ...)
+        is re-raised unchanged so it keeps its cause and stays a storage error.
+        """
+
+        try:
+            with self._write() as connection:
+                yield connection
+        except ConstraintError as exc:
+            if is_sibling_name_conflict(exc):
+                raise AlreadyExists(
+                    "an active sibling already uses this name",
+                    details=dict(details),
+                ) from exc
+            raise
 
     @staticmethod
     def _repository(connection, scope: ContentScope) -> Repository:
@@ -563,6 +714,54 @@ class ContentService:
             raise AlreadyExists(
                 "an active sibling already uses this name",
                 details={"parent_id": parent_id, "name": name},
+            )
+
+    @staticmethod
+    def _reject_other_active_sibling(
+        repo: Repository, parent_id: str | None, name: str, object_id: str
+    ) -> None:
+        """Reject a sibling name held by a different active object."""
+
+        sibling = repo.find_child(parent_id, name)
+        if sibling is not None and sibling.object_id != object_id:
+            raise AlreadyExists(
+                "an active sibling already uses this name",
+                details={"parent_id": parent_id, "name": name},
+            )
+
+    @staticmethod
+    def _protected_ids(repo: Repository) -> set[str]:
+        """Return the branch root plus its fixed top-level folder identities.
+
+        Protection follows object identity, not the name currently stored on an
+        arbitrary node, so a folder called ``main`` somewhere else stays
+        editable while the real ``/main`` and the other fixed folders do not.
+        """
+
+        branch_root = repo.get_branch_root_id()
+        if branch_root is None:
+            raise UnsupportedSchema(
+                "branch has no root object",
+                details={"branch_id": repo.branch_id},
+            )
+        protected = {branch_root}
+        for name in DEFAULT_TOP_LEVEL_NAMES:
+            child = repo.find_child(branch_root, name)
+            if (
+                child is not None
+                and child.deleted_at is None
+                and child.kind == "folder"
+            ):
+                protected.add(child.object_id)
+        return protected
+
+    def _require_unprotected(
+        self, repo: Repository, entry: EntryRecord
+    ) -> None:
+        if entry.object_id in self._protected_ids(repo):
+            raise ProtectedNode(
+                "protected object cannot be renamed or moved",
+                details={"object_id": entry.object_id},
             )
 
     @staticmethod
