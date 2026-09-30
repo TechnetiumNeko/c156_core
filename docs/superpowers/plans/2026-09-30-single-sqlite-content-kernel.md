@@ -1,5 +1,7 @@
 # 单 SQLite 虚拟文件系统与共用内容内核 Implementation Plan
 
+状态：2026-09-30 已完成。本文保留实施任务与当时的验收记录；当前启动和开发说明见 [README](../../../README.md)，工作台交付记录见 [工作台实施记录](2026-09-30-web-document-workbench.md)。下文的阶段约束描述原实施过程。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 将旧单对象 SQLite 协议迁移为统一 SQLite 虚拟文件系统，通过共用 ContentService 完成内容操作并接入现有 CLI 和终端编辑器。
@@ -379,21 +381,17 @@ Task 1 的模型固定为 frozen dataclass：`ContentScope(workspace_id, branch_
 
 ## 执行与验收记录
 
-2026-09-30：按用户选择的 subagent-driven-development 顺序完成 Tasks 1–12，各任务经过独立审查及必要的修复复审。前八项使用 DSH deepseek-flash；任务九途中遇到 402 QUOTA，保留部分产物并按用户备用规则切换原生 gpt-6.1-sol / medium。controller 统一核验并本地提交，未推送实施分支或切换原始数据。
+2026-09-30：Tasks 1–12 完成，各任务经过独立审查及必要的修复复审，整体集成审查通过。源样本保留，未切换或迁移真实运行数据。
 
-当前验收：controller 全套 `python -m unittest discover -s tests -v` 为 386/386，无警告；diff 检查通过。四个 help 入口不建库；原始／隔离工作区的 8 个旧容器散列一致。所有任务审查已通过，整体集成审查及最终定向复审已通过。
+内核交付点验收：`python -m unittest discover -s tests -v` 为 386/386，无警告；diff 检查通过。四个 help 入口不建库；原始／隔离工作区的 8 个旧容器散列一致。此数字记录内核交付时的测试范围，之后的 Web 验证另见工作台实施记录。
 
 ## 实施裁决与代价
 
-以下按发生顺序保留 controller 的裁决，包括后来修正的判断。它们记录实施取舍，不扩展本阶段业务范围。
+以下保留与实现契约有关的技术取舍，包括后来修正的判断；不扩展本阶段业务范围。
 
 | 裁决 | 依据与影响；判断错误时的代价 |
 | --- | --- |
-| 使用外部兄弟 worktree 和独立实施分支 | 已批准计划要求隔离；保留原始工作区。集成时需明确回到 renko-dev。 |
-| 委派模型遵循用户指定 deepseek-flash | 覆盖技能默认模型分级，由 controller 补核验；模型能力不足时可能增加修复轮次。 |
-| DSH 无法写共享 Git 目录时由 controller 提交 | 不扩大子任务权限；报告中的提交状态可能早于 controller 提交，审查以实际 diff/HEAD 为准。 |
 | workspace／branch 管理插入接口在 Task4 定义、Task9 复用 | 避免前后任务接口不一致；SQL 留在 Repository/schema，接口变化需要同步消费者。 |
-| Task1 报告无 SHA 不影响随后 controller 提交；不扩展直接无效 snapshot 构造的校验 | 以 db87fe6 审查包和存储产生的合法快照为准；直接 Python 构造者需提供合法 JSON 数据。 |
 | Repository 插入记录必须匹配实例范围 | FK 仅保证记录内部引用，不代表 Repository 的范围；拒绝跨范围输入可能使错误调用提前失败。 |
 | 不增加 position 的二十位上限；曾认为 UUID 分隔守卫足够 | SQLite INTEGER 最多十九位，排序宽度足够；ID 判断随后被下面的旧 ID 实测修正。 |
 | 显式 init 可创建数据库父目录 | 属于管理操作，不是虚拟目录副作用；失败可能留下空父目录。 |
@@ -407,4 +405,4 @@ Task 1 的模型固定为 frozen dataclass：`ContentScope(workspace_id, branch_
 | EditorResult 增加 discard_requested=False | 区分明确 :q! 与普通关闭，保留三参数构造；代价是新增一个编辑器局部可选结果字段。 |
 | Task12 接管循环 metadata、写前编码、opaque ID、深目录遍历等收尾修复 | 关闭已复现问题，保留同一 API／事务／顺序；增加少量验证，不增加恢复、协作或框架功能。 |
 
-整体审查收尾：一次修复波关闭来源目录遍历错误被忽略、生成／隐藏列漏检和非普通文件读取阻塞三项问题。最终 controller 验收 386/386、无警告；来源未切换，实施分支等待用户选择集成方式。
+整体审查收尾：修复来源目录遍历错误被忽略、生成／隐藏列漏检和非普通文件读取阻塞三项问题；内核交付点验收 386/386、无警告，来源样本未切换。
