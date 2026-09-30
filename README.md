@@ -1,5 +1,6 @@
 > [!IMPORTANT]
 > **renko 分支（当前为 `renko-dev`）正在修改数据库存储协议：从每个文档／目录各自使用 SQLite，改为统一使用一个 SQLite 数据库。迁移尚在进行中。**
+> 迁移与通用内核操作的[设计方案](docs/superpowers/specs/2026-09-30-single-sqlite-content-kernel-design.md)已整理，待审阅。
 
 这是 C156 Project 的网站原型代码仓库，使用 Python 开发。
 
