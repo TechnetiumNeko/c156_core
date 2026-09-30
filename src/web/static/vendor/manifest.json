@@ -1,0 +1,47 @@
+[
+  {
+    "file": "marked.umd.js",
+    "package": "marked",
+    "version": "18.0.14",
+    "source": "https://registry.npmjs.org/marked/-/marked-18.0.14.tgz",
+    "member": "package/lib/marked.umd.js",
+    "sha256": "21568877a938d2c4e7d74e27f18e60da96bb73a68809610ca39216e1efebae62",
+    "license": "MIT"
+  },
+  {
+    "file": "marked-LICENSE",
+    "package": "marked",
+    "version": "18.0.14",
+    "source": "https://registry.npmjs.org/marked/-/marked-18.0.14.tgz",
+    "member": "package/LICENSE",
+    "sha256": "8e3a3f82f59a60958f56ca08f445647c32a4733dc7ca6c2c46f6eb898471ab9c",
+    "license": "MIT"
+  },
+  {
+    "file": "purify.min.js",
+    "package": "dompurify",
+    "version": "3.4.16",
+    "source": "https://registry.npmjs.org/dompurify/-/dompurify-3.4.16.tgz",
+    "member": "package/dist/purify.min.js",
+    "sha256": "2c90a9b46d6463f26038a29b686e82bc91de01fdac9d5229e7cfe3b360134ea2",
+    "license": "(MPL-2.0 OR Apache-2.0)"
+  },
+  {
+    "file": "dompurify-LICENSE",
+    "package": "dompurify",
+    "version": "3.4.16",
+    "source": "https://registry.npmjs.org/dompurify/-/dompurify-3.4.16.tgz",
+    "member": "package/LICENSE",
+    "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "license": "(MPL-2.0 OR Apache-2.0)"
+  },
+  {
+    "file": "dompurify-LICENSE-MPL",
+    "package": "dompurify",
+    "version": "3.4.16",
+    "source": "https://registry.npmjs.org/dompurify/-/dompurify-3.4.16.tgz",
+    "member": "package/LICENSE-MPL",
+    "sha256": "fab3dd6bdab226f1c08630b1dd917e11fcb4ec5e1e020e2c16f83a0a13863e85",
+    "license": "(MPL-2.0 OR Apache-2.0)"
+  }
+]

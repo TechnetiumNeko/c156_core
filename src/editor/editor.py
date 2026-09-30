@@ -12,8 +12,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from collections.abc import Callable
 
-from src.file.document import Document
-
 from .buffer import TextBuffer
 
 
@@ -27,31 +25,35 @@ class EditorResult:
     save_requested: bool
     content: str
     changed: bool
+    discard_requested: bool = False
 
 
 class Editor:
-    """Edit one Document object; callers resolve paths and dispatch system commands."""
+    """Edit pure document data; callers resolve paths and persist the result."""
 
     def __init__(
         self,
-        document: Document,
+        document_id: str,
+        title: str,
+        content: str,
         system_command_handler: SystemCommandHandler | None = None,
     ):
-        if not isinstance(document, Document):
-            raise TypeError("Editor 只能打开 Document 对象")
-        self.document = document
+        self.document_id = document_id
+        self.title = title
         self.system_command_handler = system_command_handler
-        initial_content = document.content
+        initial_content = content
         self.buffer = TextBuffer(initial_content)
         self.original_content = initial_content
+        self.initial_presentation = self.buffer.text
         self.mode = "normal"
         self.command_line: str | None = None
         self.pending = ""
         self.count_text = ""
-        self.status = f"{document.fullpath}  |  :wq 保存退出  :q 退出"
+        self.status = f"{title}  |  :wq 保存退出  :q 退出"
         self.top_visual_row = 0
         self.closed = False
         self.save_requested = False
+        self.discard_requested = False
         self._terminal_fd: int | None = None
         self._saved_terminal: list | None = None
         self._help_return_state: tuple[TextBuffer, str, int, str, str, str] | None = None
@@ -85,11 +87,15 @@ class Editor:
             self._saved_terminal = None
             sys.stdout.write("\x1b[0m\x1b[?25h\x1b[?1049l")
             sys.stdout.flush()
-        return EditorResult(
-            save_requested=self.save_requested,
-            content=self.buffer.text,
-            changed=self.buffer.text != self.original_content,
-        )
+        return self.result()
+
+    def result(self) -> EditorResult:
+        """Return actual document data, including when the help pane is open."""
+        buffer = self._help_return_state[0] if self._help_return_state else self.buffer
+        changed = buffer.text != self.initial_presentation
+        return EditorResult(self.save_requested,
+                            buffer.text if changed else self.original_content,
+                            changed, self.discard_requested)
 
     def _read_key(self) -> str:
         file_descriptor = sys.stdin.fileno()
@@ -272,7 +278,7 @@ class Editor:
         if self.command_line is not None:
             mode_name = "命令"
         visible = visual_rows[self.top_visual_row:self.top_visual_row + body_rows]
-        header = f" C156 Editor  {self.document.fullpath}  [{mode_name}]"
+        header = f" C156 Editor  {self.title}  [{mode_name}]"
         output = [
             "\x1b[?25l\x1b[2J",
             f"\x1b[{top_padding + 1};1H",
@@ -452,11 +458,12 @@ class Editor:
             if self._help_return_state is not None:
                 self._close_help()
             else:
+                self.discard_requested = True
                 self.closed = True
         elif command == "q":
             if self._help_return_state is not None:
                 self._close_help()
-            elif self.buffer.text != self.original_content:
+            elif self.result().changed:
                 self.status = "有未保存修改；使用 :wq 保存或 :q! 放弃"
             else:
                 self.closed = True
@@ -494,7 +501,6 @@ class Editor:
         )
         help_text = Path(__file__).with_name("help.md").read_text(encoding="utf-8")
         self.buffer = TextBuffer(help_text)
-        self.original_content = help_text
         self.top_visual_row = 0
         self.mode = "normal"
         self.pending = ""
