@@ -16,9 +16,15 @@ from __future__ import annotations
 import sqlite3
 from typing import Iterable
 
+from ..core.errors import UnsupportedSchema
 from .records import EntryRecord, RevisionRecord
 
-__all__ = ["Repository"]
+__all__ = [
+    "Repository",
+    "insert_branch",
+    "insert_workspace",
+    "lookup_default_main",
+]
 
 _ENTRY_COLUMNS = (
     "e.workspace_id, e.branch_id, e.object_id, o.kind, e.parent_id, e.name, "
@@ -125,6 +131,70 @@ def _entry_record(row: sqlite3.Row) -> EntryRecord:
         modified_at=row["modified_at"],
         deleted_at=row["deleted_at"],
     )
+
+
+# -- management helpers -----------------------------------------------------
+#
+# These module-level functions receive a management connection and never begin,
+# commit or roll back a transaction themselves.  They are the only place the
+# initialization path inserts the workspace and branch rows.
+
+
+def insert_workspace(
+    connection: sqlite3.Connection,
+    workspace_id: str,
+    name: str,
+    created_at: str,
+) -> None:
+    """Insert one workspace row on the caller's management connection."""
+
+    connection.execute(
+        "INSERT INTO workspaces (id, name, created_at) VALUES (?,?,?)",
+        (workspace_id, name, created_at),
+    )
+
+
+def insert_branch(
+    connection: sqlite3.Connection,
+    workspace_id: str,
+    branch_id: str,
+    name: str,
+    root_object_id: str,
+    created_at: str,
+) -> None:
+    """Insert one branch row on the caller's management connection."""
+
+    connection.execute(
+        "INSERT INTO branches (id, workspace_id, name, root_object_id, created_at) "
+        "VALUES (?,?,?,?,?)",
+        (branch_id, workspace_id, name, root_object_id, created_at),
+    )
+
+
+def lookup_default_main(connection: sqlite3.Connection) -> tuple[str, str]:
+    """Return the single workspace and its ``main`` branch.
+
+    Zero or multiple workspaces, or a missing/duplicate ``main`` branch, raise
+    :class:`UnsupportedSchema`; an arbitrary first row is never returned.
+    """
+
+    workspaces = connection.execute("SELECT id FROM workspaces").fetchall()
+    if len(workspaces) != 1:
+        raise UnsupportedSchema(
+            "database does not contain exactly one workspace",
+            details={"workspace_count": len(workspaces)},
+        )
+    workspace_id = workspaces[0][0]
+    branches = connection.execute(
+        "SELECT id FROM branches WHERE workspace_id = ? AND name = ?",
+        (workspace_id, "main"),
+    ).fetchall()
+    if len(branches) != 1:
+        raise UnsupportedSchema(
+            "workspace does not contain exactly one main branch",
+            details={"workspace_id": workspace_id, "main_count": len(branches)},
+        )
+    return (workspace_id, branches[0][0])
 
 
 class Repository:
