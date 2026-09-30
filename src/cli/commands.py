@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
-from pathlib import Path
 from typing import Callable
 
+from ..core.errors import NotDirectory, NotFound, NotDocument, PathOutsideRoot
+from ..core.paths import parse_path, validate_name
+from ..editor import Editor
 from .paths import VirtualFileSystem
 
 
@@ -20,6 +21,16 @@ class Command:
     directories_only: bool = False
 
 
+@dataclass(frozen=True)
+class PendingEdit:
+    """Unsaved text and its original optimistic concurrency base, in memory only."""
+
+    object_id: str
+    title: str
+    base_revision_id: str
+    content: str
+
+
 @dataclass
 class CommandContext:
     fs: VirtualFileSystem
@@ -28,6 +39,8 @@ class CommandContext:
     system_command_handler: Callable[[str], None] | None = None
     active_editor: object | None = None
     prompt: Callable[[str], str] = input
+    editor_factory: Callable = Editor
+    pending_edit: PendingEdit | None = None
 
 
 def _require_args(args: list[str], count: int, usage: str) -> None:
@@ -60,59 +73,21 @@ def command_pwd(context: CommandContext, args: list[str]) -> None:
 def command_cd(context: CommandContext, args: list[str]) -> None:
     _require_args(args, 1, "cd <path>")
     target = context.fs.resolve(args[0])
-    if not target.exists():
-        raise FileNotFoundError(f"目录不存在: {args[0]}")
-    if not target.is_dir():
-        raise NotADirectoryError(f"不是目录: {args[0]}")
-    context.fs.cwd = target
+    if target.kind != "folder":
+        raise NotDirectory("不是目录", details={"path": args[0]})
+    context.fs.cwd_id = target.id
 
 
 def command_ls(context: CommandContext, args: list[str]) -> None:
     if len(args) > 1:
         raise ValueError("用法: ls [path]")
     target = context.fs.resolve(args[0] if args else ".")
-    if not target.exists():
-        raise FileNotFoundError(f"路径不存在: {args[0]}")
-    if target.is_file():
+    if target.kind != "folder":
         context.output(target.name)
         return
-    if not target.is_dir():
-        raise ValueError(f"不支持的文件类型: {args[0]}")
-    entries = sorted(
-        (entry for entry in target.iterdir() if entry.name != ".folder"),
-        key=lambda item: (not item.is_dir(), item.name.lower()),
-    )
-    for entry in entries:
-        context.output(entry.name + ("/" if entry.is_dir() else ""))
-
-
-def _tree_lines(root: Path, max_depth: int, virtual_root: Path) -> list[str]:
-    lines = [root.name or "/"]
-
-    def visit(directory: Path, level: int) -> None:
-        if level >= max_depth:
-            return
-        try:
-            children = sorted(
-                (child for child in directory.iterdir() if child.name != ".folder"),
-                key=lambda item: (not item.is_dir(), item.name.lower()),
-            )
-        except OSError as exc:
-            lines.append(f"{'  ' * (level + 1)}[无法读取: {exc}]")
-            return
-        for index, child in enumerate(children):
-            last = index == len(children) - 1
-            prefix = "  " * (level + 1) + ("└── " if last else "├── ")
-            lines.append(prefix + child.name + ("/" if child.is_dir() else ""))
-            if child.is_dir():
-                try:
-                    child.resolve().relative_to(virtual_root)
-                except (OSError, ValueError):
-                    continue
-                visit(child, level + 1)
-
-    visit(root, 0)
-    return lines
+    entries = context.fs.service.list_children(context.fs.scope, target.id)
+    for entry in sorted(entries, key=lambda node: (node.kind != "folder", node.name.lower())):
+        context.output(entry.name + ("/" if entry.kind == "folder" else ""))
 
 
 def command_tree(context: CommandContext, args: list[str]) -> None:
@@ -143,38 +118,21 @@ def command_tree(context: CommandContext, args: list[str]) -> None:
     max_depth = max_depth if max_depth is not None else 2
 
     target = context.fs.resolve(path)
-    if not target.exists():
-        raise FileNotFoundError(f"路径不存在: {path}")
-    if not target.is_dir():
-        raise NotADirectoryError(f"不是目录: {path}")
-    for line in _tree_lines(target, max_depth, context.fs.root):
-        context.output(line)
+    items = context.fs.service.list_tree(context.fs.scope, target.id, max_depth=max_depth)
+    last_child = {item.node.parent_id: item.node.id for item in items if item.depth > 0}
+    for item in items:
+        node = item.node
+        if item.depth == 0:
+            context.output(node.name if node.path != "/" else "/")
+        else:
+            connector = "└── " if last_child[node.parent_id] == node.id else "├── "
+            context.output("  " * item.depth + connector + node.name + ("/" if node.kind == "folder" else ""))
 
 
 def command_cat(context: CommandContext, args: list[str]) -> None:
     _require_args(args, 1, "cat <path>")
     target = context.fs.resolve(args[0])
-    if not target.exists():
-        raise FileNotFoundError(f"文件不存在: {args[0]}")
-    if not target.is_file():
-        raise IsADirectoryError(f"不是文件: {args[0]}")
-    from ..file.document import Document
-    from ..file.sql import SqlFile
-
-    try:
-        record = SqlFile(target).record()
-    except (FileNotFoundError, ValueError):
-        record = None
-
-    if record is not None:
-        if record.kind != "document":
-            raise ValueError(f"cat 只能显示 document 正文，目标类型为 {record.kind}: {args[0]}")
-        content = Document(target).content
-    else:
-        try:
-            content = target.read_text(encoding="utf-8")
-        except UnicodeDecodeError as exc:
-            raise ValueError(f"无法以 UTF-8 文本读取: {args[0]}") from exc
+    content = context.fs.service.read_document(context.fs.scope, target.id).content
     context.output(content, end="")
     if not content.endswith("\n"):
         context.output("")
@@ -182,101 +140,147 @@ def command_cat(context: CommandContext, args: list[str]) -> None:
 
 def command_mkdir(context: CommandContext, args: list[str]) -> None:
     _require_args(args, 1, "mkdir <path>")
-    target = context.fs.resolve(args[0])
-    parent_container = target.parent / ".folder"
-    parent_folder = None
-    if parent_container.is_file():
-        from ..file.folder import Folder
-
-        parent_folder = Folder(parent_container)
-
-    target.mkdir()
-    if parent_folder is not None:
-        try:
-            child = Folder.create(
-                target / ".folder",
-                fullpath=f"{parent_folder.fullpath.rstrip('/')}/{target.name}",
-                parent_id=parent_folder.id,
-            )
-            parent_folder.add_child(child.id)
-        except Exception:
-            import shutil
-
-            shutil.rmtree(target, ignore_errors=True)
-            raise
+    parent, name = creation_target(context, args[0])
+    context.fs.service.create_folder(context.fs.scope, parent.id, name)
 
 
 def command_edit(context: CommandContext, args: list[str]) -> None:
     _require_args(args, 1, "edit <path>")
-    target = context.fs.resolve(args[0])
-    if target.exists() and not target.is_file():
-        raise IsADirectoryError(f"edit 只能打开 document，不能打开目录: {args[0]}")
-
-    from ..editor import Editor
-    from ..file.document import Document
-    from ..file.folder import Folder
-
-    parent_container = target.parent / ".folder"
-    if not parent_container.is_file():
-        raise ValueError(f"父目录没有有效的 .folder 容器: {target.parent}")
-    parent = Folder(parent_container)
-    expected_fullpath = f"{parent.fullpath.rstrip('/')}/{target.name}"
-    created = False
-
-    if target.exists():
-        document = Document(target)
-        if document.fullpath != expected_fullpath or document.parent_id != parent.id:
-            raise ValueError(f"文档元数据与所在目录不匹配: {args[0]}")
-        if document.id not in parent.children():
-            raise ValueError(f"文档未登记在所在目录的 file 表中: {args[0]}")
-    else:
+    path = args[0]
+    if parse_path(path).trailing_slash:
+        raise NotDocument("文档路径不能以 / 结尾")
+    try:
+        target = context.fs.resolve(path)
+    except (NotFound, PathOutsideRoot):
+        pending = context.pending_edit
+        parsed = parse_path(path)
+        # Restore an unavailable object by its last displayed path, without
+        # creating a replacement or changing the original save revision.
+        if pending is not None and all(part not in (".", "..") for part in parsed.parts):
+            prefix = "/" if parsed.absolute else context.fs.display().rstrip("/") + "/"
+            if prefix + "/".join(parsed.parts) == pending.title:
+                edit_pending(context)
+                return
+        # Resolve/validate the parent before asking; this also rejects doc/../leaf.
+        parent, name = creation_target(context, path)
+        if context.pending_edit is not None and not handle_pending(context):
+            return
         try:
-            answer = context.prompt(
-                f"文档不存在: {args[0]}。是否创建并编辑？ [y/N] "
-            ).strip().lower()
+            answer = context.prompt("文档不存在，是否创建？[y/N] ").strip().lower()
         except (EOFError, KeyboardInterrupt):
-            context.output("已取消，未创建文档。")
+            context.output("创建已取消。" + ("未保存正文已保留在当前会话。"
+                                      if context.pending_edit is not None else ""))
             return
         if answer not in ("y", "yes"):
-            context.output("已取消，未创建文档。")
             return
-        if not target.parent.is_dir():
-            raise FileNotFoundError(f"父目录不存在: {target.parent}")
-        target.touch(exist_ok=False)
-        try:
-            document = Document.create(
-                target,
-                fullpath=expected_fullpath,
-                parent_id=parent.id,
-            )
-            parent.add_child(document.id)
-        except Exception:
-            target.unlink(missing_ok=True)
-            raise
-        created = True
-        context.output(f"已创建文档: {args[0]}")
-
-    # Future authority checks belong here, before opening the editor.
-    editor = Editor(document, system_command_handler=context.system_command_handler)
-    context.active_editor = editor
-    try:
-        result = editor.run()
-    except KeyboardInterrupt:
-        if created:
-            context.output("编辑已取消；新建的空文档仍保留。")
-        else:
-            context.output("编辑已取消，未保存。")
+        target = context.fs.service.create_document(context.fs.scope, parent.id, name)
+    pending = context.pending_edit
+    if pending is not None and pending.object_id == target.id:
+        edit_pending(context)
         return
-    finally:
-        context.active_editor = None
+    if pending is not None and not handle_pending(context):
+        return
+    document = context.fs.service.read_document(context.fs.scope, target.id)
+    initial = PendingEdit(document.id, document.path, document.revision_id, document.content)
+    edit_pending(context, initial)
 
-    if result.save_requested:
-        # Persist content and metadata here, outside the editor.
-        document.content = result.content
-        document.sql.set_metadata("modified_at", datetime.now().astimezone().isoformat())
-        context.output("文档已保存。")
-    elif created:
-        context.output("新建的文档尚未保存内容。")
+
+def creation_target(context: CommandContext, path: str):
+    """Split a virtual path lexically; resolution still validates each parent step."""
+    parsed = parse_path(path)
+    name = parsed.parts[-1] if parsed.parts else ""
+    validate_name(name)
+    parent_path = "/".join(parsed.parts[:-1])
+    if parsed.absolute:
+        parent_path = "/" + parent_path
+    parent = context.fs.resolve(parent_path or ".")
+    if parent.kind != "folder":
+        raise NotDirectory("父路径不是目录")
+    return parent, name
+
+
+def pending_choice(context: CommandContext, *, allow_discard=False) -> str:
+    choices = "continue 继续编辑 / view 查看正文 / later 稍后处理"
+    if allow_discard:
+        choices += " / discard 明确放弃"
+    try:
+        return context.prompt(f"存在未保存正文：{choices} [later] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        context.output("正文仍未保存，已保留在当前会话。")
+        return "later"
+
+
+def view_pending(context: CommandContext) -> None:
+    context.output(context.pending_edit.content)
+
+
+def handle_pending(context: CommandContext) -> bool:
+    """Guard switching documents and exiting; only explicit discard drops text."""
+    while context.pending_edit is not None:
+        choice = pending_choice(context, allow_discard=True)
+        if choice in ("discard", "放弃"):
+            context.pending_edit = None
+        elif choice in ("view", "查看"):
+            view_pending(context)
+        elif choice in ("continue", "继续"):
+            edit_pending(context)
+        else:
+            return False
+    return True
+
+
+def edit_pending(context: CommandContext, initial: PendingEdit | None = None) -> None:
+    """Run editors outside transactions; failures retain text and the exact base."""
+    pending = initial if initial is not None else context.pending_edit
+    while pending is not None:
+        editor = context.editor_factory(pending.object_id, pending.title, pending.content,
+                                        system_command_handler=context.system_command_handler)
+        context.active_editor = editor
+        try:
+            result = editor.run()
+        except KeyboardInterrupt:
+            # Real editor can return its in-memory buffer after terminal cleanup.
+            # Substitutes need only run(); an existing failed buffer remains intact.
+            if isinstance(editor, Editor):
+                interrupted = editor.result()
+                if interrupted.changed:
+                    context.pending_edit = PendingEdit(pending.object_id, pending.title,
+                                                       pending.base_revision_id, interrupted.content)
+            context.output("编辑已取消。" + ("未保存正文已保留在当前会话。"
+                                      if context.pending_edit is not None else ""))
+            return
+        finally:
+            context.active_editor = None
+        if not result.save_requested:
+            # A normal :q on restored text is not permission to drop the earlier
+            # failed result; only explicit :q! (or the CLI discard choice) is.
+            if result.discard_requested:
+                context.pending_edit = None
+            return
+        pending = PendingEdit(pending.object_id, pending.title,
+                              pending.base_revision_id, result.content)
+        context.pending_edit = pending
+        try:
+            context.fs.service.save_document(context.fs.scope, pending.object_id,
+                                             pending.content,
+                                             expected_revision_id=pending.base_revision_id)
+        except KeyboardInterrupt:
+            context.output("保存已取消；未保存正文已保留在当前会话。")
+            return
+        except Exception as exc:
+            # Unknown storage errors must preserve the result just like conflicts.
+            context.output(f"保存失败：{exc}；正文仍未保存，已保留。")
+        else:
+            context.pending_edit = None
+            return
+        while True:
+            choice = pending_choice(context)
+            if choice in ("view", "查看"):
+                view_pending(context)
+            elif choice in ("continue", "继续"):
+                break
+            else:
+                return
 
 
 def built_in_commands() -> list[Command]:

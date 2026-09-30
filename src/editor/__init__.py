@@ -1,4 +1,4 @@
-"""Document-only modal terminal editor."""
+"""Pure document-data modal terminal editor."""
 
 from .buffer import TextBuffer
 from .editor import Editor, EditorResult, SystemCommandHandler

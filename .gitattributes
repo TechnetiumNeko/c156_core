@@ -1,0 +1,3 @@
+# Keep upstream builds and licenses byte-for-byte, including their whitespace.
+src/web/static/vendor/*.js -whitespace
+src/web/static/vendor/*-LICENSE* -whitespace

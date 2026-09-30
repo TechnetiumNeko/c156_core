@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>C156 文档工作台</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/vendor/marked.umd.js" defer></script>
+    <script src="/vendor/purify.min.js" defer></script>
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <div class="workspace">
+      <!-- 目录和新建入口 -->
+      <aside id="sidebar">
+        <div class="brand">
+          C156
+          <span>文档工作台</span>
+        </div>
+        <div class="tree-tools">
+          <button id="new-folder">新建目录</button>
+          <button id="new-document">新建文档</button>
+          <button id="refresh">刷新</button>
+        </div>
+        <p id="active-folder" class="muted"></p>
+        <nav id="tree" aria-label="文档目录"></nav>
+        <p class="memory-note">草稿仅保留在当前页面中。关闭前请保存。</p>
+      </aside>
+      <main>
+        <!-- 当前文档和保存状态 -->
+        <header>
+          <button id="toggle-tree" aria-label="显示或收起目录">目录</button>
+          <div id="path">选择文档开始编辑</div>
+          <span id="status" role="status">就绪</span>
+          <button id="save" class="primary" disabled>保存</button>
+        </header>
+        <div class="mode-bar" role="group" aria-label="显示模式">
+          <button data-mode="source">源码</button>
+          <button data-mode="split" aria-pressed="true">并排</button>
+          <button data-mode="preview">预览</button>
+        </div>
+        <p id="error" role="alert" hidden></p>
+        <!-- 冲突处理与旧草稿对照 -->
+        <section id="conflict" hidden>
+          <strong>保存发生冲突</strong>
+          <p>你的草稿和原始修订已保留。查看最新正文后，可从最新正文开始手动合并。</p>
+          <button id="view-latest">查看最新正文</button>
+          <button id="copy-draft">复制我的草稿</button>
+          <button id="merge">开始手动合并</button>
+          <p id="conflict-error" role="alert"></p>
+          <div id="latest-panel" hidden>
+            <h3>最新正文（只读）</h3>
+            <pre id="latest"></pre>
+          </div>
+        </section>
+        <section id="comparison" hidden>
+          <details open>
+            <summary>合并前我的草稿（只读）</summary>
+            <button id="copy-comparison">复制旧草稿</button>
+            <pre id="old-draft"></pre>
+          </details>
+        </section>
+        <!-- Markdown 编辑与渲染预览 -->
+        <div id="panes" data-mode="split">
+          <section class="source-pane">
+            <label for="editor">Markdown 源码</label>
+            <textarea
+              id="editor"
+              spellcheck="false"
+              disabled
+              placeholder="从左侧打开文档，或新建一篇文档。"
+            ></textarea>
+          </section>
+          <section class="preview-pane">
+            <h2>渲染预览</h2>
+            <article id="preview"><p class="empty">你的文字将在这里呈现。</p></article>
+          </section>
+        </div>
+      </main>
+    </div>
+    <!-- 新建和切换文档的确认弹窗 -->
+    <dialog id="create-dialog">
+      <form id="create-form">
+        <h2 id="create-title">新建</h2>
+        <p id="create-location"></p>
+        <label for="name">名称</label>
+        <input id="name" name="name" autocomplete="off" required />
+        <p id="create-error" role="alert"></p>
+        <div class="dialog-actions">
+          <button type="button" id="create-cancel">取消</button>
+          <button type="submit" id="create-submit" class="primary">创建</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="switch-dialog">
+      <h2>保留当前修改？</h2>
+      <p>当前文档有未保存的修改。保存失败时会留在当前文档。</p>
+      <div class="dialog-actions">
+        <button data-choice="cancel">取消</button>
+        <button data-choice="discard">放弃修改</button>
+        <button data-choice="save" class="primary">保存后切换</button>
+      </div>
+    </dialog>
+  </body>
+</html>

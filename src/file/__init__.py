@@ -1,7 +1,3 @@
-"""SQLite-backed virtual file objects."""
+"""Retired single-container package; use src.services and src.storage."""
 
-from .document import Document
-from .folder import Folder
-from .sql import AbstractFileRecord, SqlFile
-
-__all__ = ["AbstractFileRecord", "Document", "Folder", "SqlFile"]
+__all__ = []

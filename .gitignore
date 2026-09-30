@@ -30,6 +30,18 @@ dist/
 *-wal
 *-shm
 
+# Unified runtime content database (legacy .folder containers stay tracked)
+/data/c156.sqlite
+/.c156/
+# Launcher generated for this checkout's absolute path
+/C156.desktop
+
+# Atomic migration temporary database namespace and its sidecars
+*.migrate-*.tmp
+*.migrate-*.tmp-journal
+*.migrate-*.tmp-wal
+*.migrate-*.tmp-shm
+
 # Operating system files
 .DS_Store
 Thumbs.db
