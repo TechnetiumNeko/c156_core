@@ -62,3 +62,15 @@ class CLICompletionTests(CLIReadFixture):
         for line in ('tree -d ', 'tree --max-depth 2 ', 'tree products ', 'pwd ', 'unknown '):
             self.assertEqual(self.complete(line), [])
         self.assertTrue(self.complete('tree /spa'))
+
+    def test_ideographic_space_stays_inside_one_shell_path_argument(self):
+        name = '中文\u3000目录'
+        self.service.create_folder(self.scope, self.scope.root_id, name)
+        line = 'cd 中文\u3000目'
+        self.assertEqual(shlex.split(line), ['cd', '中文\u3000目'])
+        begidx = len('cd ')
+        matches = self.complete(line, begidx)
+        self.assertEqual([shlex.split(line[:begidx] + value) for value in matches],
+                         [['cd', name + '/']])
+        self.cli.execute(line[:begidx] + matches[0])
+        self.assertEqual(self.cli.fs.display(), '/' + name)

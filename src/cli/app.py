@@ -10,11 +10,12 @@ from typing import Callable
 
 from ..core.errors import ContentError
 from ..core.models import ContentScope
+from ..editor import Editor
 from ..services.content import ContentService
 from ..storage import Database
 from ..storage.errors import StorageError
 
-from .commands import Command, CommandContext, built_in_commands
+from .commands import Command, CommandContext, built_in_commands, handle_pending
 from .completion import Completer
 from .paths import VirtualFileSystem
 
@@ -26,6 +27,8 @@ class CLI:
         scope: ContentScope,
         output: Callable[..., None] = print,
         prompt: Callable[[str], str] = input,
+        *,
+        editor_factory: Callable = Editor,
     ):
         self.fs = VirtualFileSystem(service, scope)
         self.output = output
@@ -37,6 +40,7 @@ class CLI:
             output,
             system_command_handler=self._execute_editor_command,
             prompt=prompt,
+            editor_factory=editor_factory,
         )
         self.context.commands = tuple(self.commands_by_name.values())
 
@@ -48,6 +52,8 @@ class CLI:
             raise ValueError(f"解析命令失败: {exc}") from exc
         if words and words[0] == "edit":
             raise ValueError("编辑器中不能再次执行 edit")
+        if words and words[0] == "exit" and self.context.active_editor is not None:
+            raise ValueError("请先使用 :wq 保存或 :q! 明确放弃，再退出 CLI")
         if not self.execute(line):
             self.exit_requested = True
             if self.context.active_editor is not None:
@@ -93,7 +99,10 @@ class CLI:
             if args:
                 self.output(f"用法: {name}")
                 return True
-            return False
+            if self.context.active_editor is not None:
+                self.output("请先使用 :wq 保存或 :q! 明确放弃，再退出 CLI")
+                return True
+            return not handle_pending(self.context)
         command = self.commands_by_name.get(name)
         if command is None:
             self.output(f"未知命令: {name}。输入 help 查看可用命令。")
@@ -103,6 +112,9 @@ class CLI:
             return True
         try:
             command.handler(self.context, args)
+        except KeyboardInterrupt:
+            self.output("操作已取消。" + ("未保存正文已保留在当前会话。"
+                                      if self.context.pending_edit is not None else ""))
         except ContentError as exc:
             self.output(content_error_message(exc))
         except (OSError, ValueError, RuntimeError) as exc:
@@ -128,6 +140,8 @@ class CLI:
                 line = self.context.prompt(prompt)
             except EOFError:
                 self.output("")
+                if self.context.pending_edit is not None:
+                    self.output("正文仍未保存；当前会话结束后内存正文将丢失。")
                 return 0
             except KeyboardInterrupt:
                 self.output("")

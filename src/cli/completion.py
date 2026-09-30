@@ -15,7 +15,7 @@ def _tokens(value: str):
     quote = None
     escaped = False
     for index, char in enumerate(value):
-        if start is None and not char.isspace():
+        if start is None and char not in ' \t\r\n':
             start = index
         if escaped:
             # Match the CLI shlex parser inside double quotes.
@@ -32,7 +32,7 @@ def _tokens(value: str):
                 decoded += char
         elif char in "'\"":
             quote = char
-        elif char.isspace():
+        elif char in ' \t\r\n':
             if start is not None:
                 tokens.append((decoded, start))
                 decoded = ''
