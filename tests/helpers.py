@@ -8,8 +8,10 @@ never touch the tracked legacy sample under ``data/``.
 from __future__ import annotations
 
 import shutil
+import sqlite3
 import tempfile
 import unittest
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -28,12 +30,19 @@ __all__ = [
     "SAMPLE_DATA",
     "SAMPLE_DOCUMENT_ID",
     "FIXTURE_TIME",
+    "LEGACY_SAMPLE_DOCUMENT_CONTENT",
+    "LEGACY_SAMPLE_DOCUMENT_SHA256",
+    "LEGACY_SAMPLE_ROOT_ID",
     "ContentReadFixture",
     "RepositoryFixture",
     "TempPathTestCase",
     "copy_sample_data",
+    "create_legacy_document",
+    "create_legacy_folder",
     "create_schema_database",
     "entry_state",
+    "legacy_connection",
+    "legacy_object_id",
     "revision_state",
     "seed_content_read_fixture",
     "seed_repository_fixture",
@@ -43,6 +52,14 @@ __all__ = [
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SAMPLE_DATA = PROJECT_ROOT / "data"
 SAMPLE_DOCUMENT_ID = "8b168849-1ab3-4542-9828-f2e2120f2d57"
+LEGACY_SAMPLE_ROOT_ID = "783c8c94-fc40-4312-9e20-e90a7c57719f"
+LEGACY_SAMPLE_DOCUMENT_CONTENT = (
+    "Concrete cream is a classical staple of Kujikuji people.\n"
+    "Concrete cream is delicious!"
+)
+LEGACY_SAMPLE_DOCUMENT_SHA256 = (
+    "0dd92b5440aa9d35c1da22ca232e346d57fd8fb800c712a6f05358969c93d268"
+)
 
 
 class TempPathTestCase(unittest.TestCase):
@@ -90,6 +107,154 @@ def copy_sample_data(destination: Path) -> Path:
         shutil.rmtree(destination)
     shutil.copytree(SAMPLE_DATA, destination)
     return destination
+
+
+@contextmanager
+def legacy_connection(path: Path, *, write: bool = False):
+    """Open a legacy SQLite container read-only or for test fixture mutation.
+
+    Read-only connections use a ``mode=ro`` URI; write connections commit on a
+    clean exit and are reserved for building or corrupting *copies* of the
+    tracked sample.  This helper never calls the legacy ``src.file`` wrappers,
+    whose constructors create tables as a side effect.
+    """
+
+    path = Path(path)
+    if write:
+        connection = sqlite3.connect(path)
+    else:
+        connection = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    connection.row_factory = sqlite3.Row
+    try:
+        yield connection
+        if write:
+            connection.commit()
+    finally:
+        connection.close()
+
+
+def legacy_object_id(container: Path) -> str:
+    """Return the ``abstract_file.id`` stored in *container* (read-only)."""
+
+    with legacy_connection(container) as connection:
+        row = connection.execute("SELECT id FROM abstract_file").fetchone()
+    if row is None:
+        raise AssertionError(f"container has no abstract_file row: {container}")
+    return row["id"]
+
+
+def create_legacy_folder(
+    container: Path,
+    *,
+    file_id: str,
+    fullpath: str,
+    parent_id: str | None,
+    children: tuple[str, ...] = (),
+    metadata: dict[str, str] | None = None,
+) -> Path:
+    """Create a synthetic legacy ``.folder`` container with raw SQL."""
+
+    _create_legacy_container(
+        container,
+        file_id=file_id,
+        fullpath=fullpath,
+        kind="folder",
+        parent_id=parent_id,
+        children=children,
+        content=None,
+        metadata=metadata,
+    )
+    return Path(container)
+
+
+def create_legacy_document(
+    container: Path,
+    *,
+    file_id: str,
+    fullpath: str,
+    parent_id: str,
+    content: str = "",
+    metadata: dict[str, str] | None = None,
+) -> Path:
+    """Create a synthetic legacy document container with raw SQL."""
+
+    _create_legacy_container(
+        container,
+        file_id=file_id,
+        fullpath=fullpath,
+        kind="document",
+        parent_id=parent_id,
+        children=(),
+        content=content,
+        metadata=metadata,
+    )
+    return Path(container)
+
+
+def _create_legacy_container(
+    container: Path,
+    *,
+    file_id: str,
+    fullpath: str,
+    kind: str,
+    parent_id: str | None,
+    children: tuple[str, ...],
+    content: str | None,
+    metadata: dict[str, str] | None,
+) -> None:
+    container = Path(container)
+    container.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(container)
+    connection.row_factory = sqlite3.Row
+    try:
+        connection.executescript(
+            """
+            CREATE TABLE abstract_file (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                id TEXT NOT NULL UNIQUE,
+                fullpath TEXT NOT NULL UNIQUE,
+                kind TEXT NOT NULL CHECK (
+                    kind IN ('folder', 'document', 'executable', 'resource')
+                ),
+                parent_id TEXT
+            );
+            CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE "file" (
+                parent_id TEXT NOT NULL,
+                child_id TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                PRIMARY KEY (parent_id, child_id),
+                UNIQUE (parent_id, position)
+            );
+            """
+        )
+        connection.execute(
+            "INSERT INTO abstract_file(singleton, id, fullpath, kind, parent_id) "
+            "VALUES (1, ?, ?, ?, ?)",
+            (file_id, fullpath, kind, parent_id),
+        )
+        connection.executemany(
+            'INSERT INTO "file"(parent_id, child_id, position) VALUES (?, ?, ?)',
+            [(file_id, child, position) for position, child in enumerate(children)],
+        )
+        if content is not None:
+            connection.execute(
+                "CREATE TABLE document_content ("
+                "singleton INTEGER PRIMARY KEY CHECK (singleton = 1), "
+                "content TEXT NOT NULL)"
+            )
+            connection.execute(
+                "INSERT INTO document_content(singleton, content) VALUES (1, ?)",
+                (content,),
+            )
+        if metadata:
+            connection.executemany(
+                "INSERT INTO metadata(key, value) VALUES (?, ?)",
+                tuple(metadata.items()),
+            )
+        connection.commit()
+    finally:
+        connection.close()
 
 
 def table_counts(path: Path) -> dict:
