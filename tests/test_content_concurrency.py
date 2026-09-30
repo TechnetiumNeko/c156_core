@@ -197,5 +197,48 @@ class TestConcurrentSave(ContentConcurrencyTestCase):
         self.assertIn(final.content, ("甲", "乙"))
 
 
+class TestConcurrentDeleteSnapshot(ContentConcurrencyTestCase):
+    """An independent process must be able to invalidate a delete token."""
+
+    def test_deep_save_from_another_process_invalidates_delete_token(self):
+        snapshot = ContentService(self.fixture.database).prepare_delete(
+            self.scope, self.fixture.products_id
+        )
+
+        results = self.run_workers(
+            _save_worker,
+            [
+                (
+                    str(self.fixture.path),
+                    self.scope,
+                    self.fixture.concretecream_id,
+                    "并发修改",
+                )
+            ],
+        )
+        self.assertEqual([result["status"] for result in results], ["ok"])
+
+        before = table_counts(self.fixture.path)
+        with self.assertRaises(Conflict):
+            ContentService(self.fixture.database).delete_node(
+                self.scope,
+                self.fixture.products_id,
+                expected_version=snapshot.version,
+                recursive=True,
+                expected_subtree_token=snapshot.subtree_token,
+            )
+
+        # The concurrent content survives and no extra row was deleted.
+        after = table_counts(self.fixture.path)
+        self.assertEqual(after, before)
+        self.assertIsNone(
+            entry_state(self.fixture.path, self.fixture.products_id)["deleted_at"]
+        )
+        final = ContentService(self.fixture.database).read_document(
+            self.scope, self.fixture.concretecream_id
+        )
+        self.assertEqual(final.content, "并发修改")
+
+
 if __name__ == "__main__":
     unittest.main()

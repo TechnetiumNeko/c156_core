@@ -14,6 +14,7 @@ extension metadata without ever touching the fixed structural fields.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 from contextlib import contextmanager
@@ -23,6 +24,7 @@ from typing import Iterator
 from ..core.errors import (
     AlreadyExists,
     Conflict,
+    DirectoryNotEmpty,
     InvalidArgument,
     InvalidMove,
     NotDirectory,
@@ -36,6 +38,7 @@ from ..core.errors import (
 from ..core.json_values import json_equal, thaw_json, validate_metadata
 from ..core.models import (
     ContentScope,
+    DeleteSnapshot,
     DocumentSnapshot,
     NodeSnapshot,
     TreeItem,
@@ -607,8 +610,225 @@ class ContentService:
                 repo, scope, self._require_created(repo, object_id)
             )
 
-    # -- transaction and scope helpers -------------------------------------
+    # -- deletion ----------------------------------------------------------
 
+    def prepare_delete(
+        self, scope: ContentScope, folder_id: str
+    ) -> DeleteSnapshot:
+        """Return an immutable snapshot of a folder's active subtree.
+
+        One read transaction checks scope, folder type and protection, then
+        returns the pre-order active subtree (start included) and a canonical
+        token over the scope, target id and sorted ``(object_id, version)``
+        pairs.  The token is a concurrency credential only; scope and
+        protection checks run again inside the delete transaction.
+        """
+
+        self._require_str(folder_id, "folder_id")
+        with self._read() as connection:
+            repo = self._repository(connection, scope)
+            self._require_scope_root(repo, scope)
+            entry = self._require_valid_entry(
+                repo, scope, folder_id, require_folder=True
+            )
+            self._require_unprotected(repo, entry)
+            records = repo.subtree(folder_id)
+            if not records or records[0].object_id != folder_id:
+                raise UnsupportedSchema(
+                    "active folder has no active subtree",
+                    details={"object_id": folder_id},
+                )
+            return DeleteSnapshot(
+                object_id=folder_id,
+                version=entry.version,
+                items=self._subtree_items(repo, scope, records),
+                subtree_token=self._subtree_token(scope, folder_id, records),
+            )
+
+    def delete_node(
+        self,
+        scope: ContentScope,
+        object_id: str,
+        *,
+        expected_version: int,
+        recursive: bool = False,
+        expected_subtree_token: str | None = None,
+    ) -> None:
+        """Soft delete one node, or one folder's whole active subtree.
+
+        A non-recursive delete accepts no token and refuses a folder that still
+        has active children.  A recursive delete requires a non-empty token and
+        a folder target, then re-reads the active subtree inside one
+        ``BEGIN IMMEDIATE`` transaction and compares both the target version and
+        the freshly computed token before deleting.  A stale token is never
+        refreshed or retried: it raises :class:`Conflict` and the transaction
+        rolls back with no partial deletion.
+        """
+
+        self._require_str(object_id, "object_id")
+        self._require_positive_version(expected_version)
+        if not isinstance(recursive, bool):
+            raise InvalidArgument(
+                "recursive must be a boolean",
+                details={"recursive": recursive},
+            )
+        if recursive:
+            if (
+                not isinstance(expected_subtree_token, str)
+                or expected_subtree_token == ""
+            ):
+                raise InvalidArgument(
+                    "recursive delete requires a non-empty expected_subtree_token",
+                    details={"object_id": object_id},
+                )
+        elif expected_subtree_token is not None:
+            raise InvalidArgument(
+                "non-recursive delete does not accept an expected_subtree_token",
+                details={"object_id": object_id},
+            )
+        now = _utc_now()
+        with self._write() as connection:
+            repo = self._repository(connection, scope)
+            self._require_scope_root(repo, scope)
+            entry = self._require_valid_entry(repo, scope, object_id)
+            if entry.version != expected_version:
+                raise Conflict(
+                    "entry version does not match the expected version",
+                    details={
+                        "object_id": object_id,
+                        "expected_version": expected_version,
+                        "current_version": entry.version,
+                    },
+                )
+            self._require_unprotected(repo, entry)
+            if recursive:
+                if entry.kind != "folder":
+                    raise InvalidArgument(
+                        "recursive delete requires a folder",
+                        details={"object_id": object_id, "kind": entry.kind},
+                    )
+                self._delete_subtree(
+                    repo, scope, entry, expected_subtree_token, now
+                )
+            else:
+                self._delete_single(repo, entry, now)
+
+    def _delete_single(self, repo: Repository, entry: EntryRecord, now: str) -> None:
+        """Soft delete one active node and bump its external parent once."""
+
+        if entry.kind == "folder" and repo.list_children(entry.object_id):
+            raise DirectoryNotEmpty(
+                "folder still has active children",
+                details={"object_id": entry.object_id},
+            )
+        affected = repo.soft_delete_entries({entry.object_id}, now)
+        if affected != 1:
+            raise Conflict(
+                "entry changed while deleting",
+                details={"object_id": entry.object_id},
+            )
+        if entry.parent_id is not None:
+            repo.touch_entries([entry.parent_id], now)
+
+    def _delete_subtree(
+        self,
+        repo: Repository,
+        scope: ContentScope,
+        entry: EntryRecord,
+        expected_subtree_token: str,
+        now: str,
+    ) -> None:
+        """Delete an active subtree after re-checking its canonical token.
+
+        Internal nodes are only touched by ``soft_delete_entries`` so each gets
+        exactly one version bump; the external parent is touched once.  A
+        mismatch between the active row count and the prepared subtree rolls
+        the whole transaction back.
+        """
+
+        records = repo.subtree(entry.object_id)
+        if not records or records[0].object_id != entry.object_id:
+            raise Conflict(
+                "subtree changed while deleting",
+                details={"object_id": entry.object_id},
+            )
+        if self._subtree_token(scope, entry.object_id, records) != expected_subtree_token:
+            raise Conflict(
+                "subtree token does not match the prepared snapshot",
+                details={"object_id": entry.object_id},
+            )
+        active_ids = {record.object_id for record in records}
+        affected = repo.soft_delete_entries(active_ids, now)
+        if affected != len(active_ids):
+            raise Conflict(
+                "subtree changed while deleting",
+                details={
+                    "object_id": entry.object_id,
+                    "expected": len(active_ids),
+                    "affected": affected,
+                },
+            )
+        if entry.parent_id is not None:
+            repo.touch_entries([entry.parent_id], now)
+
+    def _subtree_items(
+        self,
+        repo: Repository,
+        scope: ContentScope,
+        records: list[EntryRecord],
+    ) -> tuple[TreeItem, ...]:
+        """Build pre-order tree items with depths from the flat subtree list."""
+
+        by_id = {record.object_id: record for record in records}
+        items: list[TreeItem] = []
+        for record in records:
+            depth = 0
+            seen = {record.object_id}
+            parent_id = record.parent_id
+            while parent_id is not None and parent_id in by_id:
+                if parent_id in seen:  # pragma: no cover - damaged cyclic data
+                    break
+                seen.add(parent_id)
+                depth += 1
+                parent_id = by_id[parent_id].parent_id
+            items.append(
+                TreeItem(self._snapshot(repo, scope, record), depth)
+            )
+        return tuple(items)
+
+    @staticmethod
+    def _subtree_token(
+        scope: ContentScope,
+        object_id: str,
+        records: list[EntryRecord],
+    ) -> str:
+        """Return the canonical SHA-256 token for one active subtree.
+
+        The payload is the fixed array
+        ``[workspace_id, branch_id, root_id, object_id, [[id, version], ...]]``
+        with pairs sorted by the id's BINARY order, serialised with compact
+        separators, non-ASCII preserved and no NaN.  The token is never stored.
+        """
+
+        pairs = [
+            [record.object_id, record.version]
+            for record in sorted(records, key=lambda item: item.object_id)
+        ]
+        canonical = json.dumps(
+            [
+                scope.workspace_id,
+                scope.branch_id,
+                scope.root_id,
+                object_id,
+                pairs,
+            ],
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    # -- transaction and scope helpers -------------------------------------
     @contextmanager
     def _read(self) -> Iterator:
         try:

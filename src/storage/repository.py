@@ -51,6 +51,14 @@ _UPDATABLE_COLUMNS = (
     "deleted_at",
 )
 
+#: Fixed host parameters in ``soft_delete_entries`` besides the id list:
+#: ``modified_at``, ``deleted_at``, ``workspace_id`` and ``branch_id``.
+_SOFT_DELETE_FIXED_PARAMETERS = 4
+
+#: Conservative fallback batch size when the connection cannot report its
+#: current SQLite host-variable limit.
+_DEFAULT_VARIABLE_LIMIT = 999
+
 _ANCESTORS_SQL = """
 WITH RECURSIVE chain (
     workspace_id, branch_id, object_id, parent_id, name, position, version,
@@ -461,6 +469,57 @@ class Repository:
             *unique_ids,
         ]
         return self._connection.execute(sql, parameters).rowcount
+
+    def soft_delete_entries(
+        self, object_ids: Iterable[str], deleted_at: str
+    ) -> int:
+        """Soft delete distinct active entries and return the affected row count.
+
+        Every touched row gets exactly one ``version`` bump and the same
+        ``deleted_at`` / ``modified_at`` value; already deleted rows are never
+        touched.  Ids are split into batches sized to the connection's current
+        SQLite host-variable limit, so a large subtree cannot fail with "too
+        many SQL variables" while still sharing one caller-owned transaction.
+        """
+
+        unique_ids = list(dict.fromkeys(object_ids))
+        if not unique_ids:
+            return 0
+        batch_size = self._soft_delete_batch_size()
+        total = 0
+        for start in range(0, len(unique_ids), batch_size):
+            batch = unique_ids[start : start + batch_size]
+            placeholders = ", ".join("?" for _ in batch)
+            sql = (
+                "UPDATE entries SET version = version + 1, modified_at = ?, "
+                "deleted_at = ? "
+                "WHERE workspace_id = ? AND branch_id = ? AND deleted_at IS NULL "
+                f"AND object_id IN ({placeholders})"
+            )
+            parameters: list[object] = [
+                deleted_at,
+                deleted_at,
+                self._workspace_id,
+                self._branch_id,
+                *batch,
+            ]
+            total += self._connection.execute(sql, parameters).rowcount
+        return total
+
+    def _soft_delete_batch_size(self) -> int:
+        """Return a safe id batch size for the connection's variable limit."""
+
+        limit = None
+        getlimit = getattr(self._connection, "getlimit", None)
+        limit_constant = getattr(sqlite3, "SQLITE_LIMIT_VARIABLE_NUMBER", None)
+        if getlimit is not None and limit_constant is not None:
+            try:
+                limit = getlimit(limit_constant)
+            except (sqlite3.Error, TypeError, ValueError):  # pragma: no cover
+                limit = None
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+            limit = _DEFAULT_VARIABLE_LIMIT
+        return max(1, limit - _SOFT_DELETE_FIXED_PARAMETERS)
 
     def next_position(self, parent_id: str | None) -> int:
         """Return ``MAX(position) + 1`` over the active children of ``parent_id``."""
