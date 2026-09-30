@@ -197,17 +197,18 @@ class ContentService:
             items: list[TreeItem] = []
             visited = {entry.object_id}
 
-            def walk(record: EntryRecord, depth: int) -> None:
+            pending = [(entry, 0)]
+            while pending:
+                record, depth = pending.pop()
                 items.append(TreeItem(self._snapshot(repo, scope, record), depth))
                 if max_depth is not None and depth >= max_depth:
-                    return
+                    continue
+                children = []
                 for child in repo.list_children(record.object_id):
-                    if child.object_id in visited:
-                        continue
-                    visited.add(child.object_id)
-                    walk(child, depth + 1)
-
-            walk(entry, 0)
+                    if child.object_id not in visited:
+                        visited.add(child.object_id)
+                        children.append((child, depth + 1))
+                pending.extend(reversed(children))
             return items
 
     def get_metadata(self, scope: ContentScope, object_id: str) -> dict:
@@ -418,6 +419,15 @@ class ContentService:
         self._require_str(object_id, "object_id")
         self._require_positive_version(expected_version)
         validate_metadata(changes)
+        # Validate encoding and detach caller-owned containers before opening a
+        # write connection; version comparison still precedes the no-op check.
+        try:
+            changes = json.loads(json.dumps(
+                thaw_json(changes), ensure_ascii=False, allow_nan=False,
+                separators=(",", ":"), sort_keys=True,
+            ).encode("utf-8"))
+        except (TypeError, ValueError, RecursionError) as exc:
+            raise InvalidArgument("metadata is not JSON serialisable") from exc
         now = _utc_now()
         with self._write() as connection:
             repo = self._repository(connection, scope)
@@ -980,7 +990,7 @@ class ContentService:
     ) -> None:
         if entry.object_id in self._protected_ids(repo):
             raise ProtectedNode(
-                "protected object cannot be renamed or moved",
+                "protected object cannot be renamed, moved or deleted",
                 details={"object_id": entry.object_id},
             )
 

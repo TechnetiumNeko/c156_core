@@ -345,7 +345,7 @@ Task 1 的模型固定为 frozen dataclass：`ContentScope(workspace_id, branch_
 
 **Interfaces:** `python -m src.file.bootstrap` 若保留，只转发管理 init 并打印弃用说明；明确旧数据必须 migrate-legacy，不能调用旧 initialize_data。src.file 不再导出 Document／Folder／SqlFile。所有新入口和服务 API 已由前述任务定义。
 
-- [ ] **Step 1：写失败验证。** AST 检查 CLI／editor 不 import src.file 或 Repository；services 不 import 入口，core 不 import 存储，repository 不 import service／入口且没有事务控制调用。禁止 CLI paths／commands 用 Path／os 扫描内容目录；editor 读取自身 help.md 和 app 定位数据库合法，不能用粗略全文禁用 Path。`test_lock_timeout_is_storage_busy` 确认生产默认 5000ms，独立锁连接测试可注入短 timeout；`test_save_after_move_or_delete` 覆盖范围内移动可保存、范围外移动／删除拒绝。
+- [x] **Step 1：写失败验证。** AST 检查 CLI／editor 不 import src.file 或 Repository；services 不 import 入口，core 不 import 存储，repository 不 import service／入口且没有事务控制调用。禁止 CLI paths／commands 用 Path／os 扫描内容目录；editor 读取自身 help.md 和 app 定位数据库合法，不能用粗略全文禁用 Path。`test_lock_timeout_is_storage_busy` 确认生产默认 5000ms，独立锁连接测试可注入短 timeout；`test_save_after_move_or_delete` 覆盖范围内移动可保存、范围外移动／删除拒绝。
 
   ```python
   def test_save_after_delete_fails_without_new_revision(self):
@@ -356,9 +356,9 @@ Task 1 的模型固定为 frozen dataclass：`ContentScope(workspace_id, branch_
                                      expected_revision_id=doc.revision_id)
   ```
 
-- [ ] **Step 2：确认红。** Run `python -m unittest tests.test_architecture tests.test_content_concurrency -v`；首先应因旧 import／接口残留而失败，若已无残留则记录检查直接通过，不故意制造失败。
-- [ ] **Step 3：移除旧实现并同步文档。** 将旧协议说明放进“迁移来源”，统一正式运行库路径、虚拟 main 根与作用域、管理命令、Repository／服务职责、冲突 buffer 处理和尚未实现能力。bin 只是兼容顶层目录，不把软删除描述为自动搬入 bin。README 的迁移进行中说明改为实际交付状态，链接本 spec／计划；保留旧数据样本，不提交生成库。
-- [ ] **Step 4：跑完整验收。** Run `python -m unittest discover -s tests -v` 和 `git diff --check`；全部测试通过、无 diff 格式错误。确认 `python -m src.storage --help`、`python run_cli.py --help`、`python -m src.cli --help`、保留的 bootstrap `--help` 不产生运行数据库。不要启动交互 CLI／浏览器，也不在仓库 data 中执行 init／迁移。
+- [x] **Step 2：确认红。** Run `python -m unittest tests.test_architecture tests.test_content_concurrency -v`；首先应因旧 import／接口残留而失败，若已无残留则记录检查直接通过，不故意制造失败。
+- [x] **Step 3：移除旧实现并同步文档。** 将旧协议说明放进“迁移来源”，统一正式运行库路径、虚拟 main 根与作用域、管理命令、Repository／服务职责、冲突 buffer 处理和尚未实现能力。bin 只是兼容顶层目录，不把软删除描述为自动搬入 bin。README 的迁移进行中说明改为实际交付状态，链接本 spec／计划；保留旧数据样本，不提交生成库。
+- [x] **Step 4：跑完整验收。** Run `python -m unittest discover -s tests -v` 和 `git diff --check`；全部测试通过、无 diff 格式错误。确认 `python -m src.storage --help`、`python run_cli.py --help`、`python -m src.cli --help`、保留的 bootstrap `--help` 不产生运行数据库。不要启动交互 CLI／浏览器，也不在仓库 data 中执行 init／迁移。
 - [ ] **Step 5：检查覆盖并提交。** 核对下表和 git status，只有授权源码／文档／测试，源样本散列未变化，运行库及临时产物未跟踪。Commit message：`docs: complete unified content kernel migration and validation`。
 
 ## Spec 覆盖核对
@@ -382,3 +382,5 @@ Task 1 的模型固定为 frozen dataclass：`ContentScope(workspace_id, branch_
 本计划仅规划实施，尚未执行以上代码任务。开始实施前由用户审阅计划并选择执行方式：主 agent 顺序实施，或按任务委派并独立审查。若采用子 agent，每次只分配一个上述可独立验证的任务，并携带文件与接口约定；共享 content.py、repository.py 或 CLI 文件的任务不得同时修改。每项交接给出实际变更、测试命令和结果，主 agent 检查产物后再继续下一项。
 
 建议主 agent 顺序实施：任务较多，但共享服务、Repository 和 CLI 接口依赖紧密；迁移与并发测试已经提供逐步验证，最后再安排独立整体审查。若选子 agent 模式，严格沿依赖链交接，不把整个内核重写作为一个大任务委派。
+
+Task 12 实现者验收：382/382 tests 通过，无警告；diff、help、原始／隔离工作区的 8 个源容器散列核对通过。Step 5 的覆盖核对已完成；提交由 controller 执行，最终集成审阅仍待完成。

@@ -592,3 +592,33 @@ class TestTransactionalRollback(ContentWriteTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestMetadataPrevalidation(ContentWriteTestCase):
+    def test_invalid_metadata_never_opens_write_transaction(self):
+        cyclic_dict = {}
+        cyclic_dict["self"] = cyclic_dict
+        cyclic_list = []
+        cyclic_list.append(cyclic_list)
+        doc = self.service.get_node(self.scope, self.document_id)
+        for index, payload in enumerate((cyclic_dict, {"loop": cyclic_list}, {"bad": object()},
+                        {"bad": float("nan")}, {"bad": "\ud800"})):
+            with self.subTest(case=index):
+                with patch.object(self.service, "_write") as write:
+                    with self.assertRaises(InvalidArgument):
+                        self.service.set_metadata(self.scope, doc.id, payload,
+                                                  expected_version=doc.version)
+                    write.assert_not_called()
+
+
+    def test_metadata_is_detached_before_write_connection(self):
+        doc = self.service.get_node(self.scope, self.document_id)
+        changes = {"nested": {"value": "validated"}}
+        original_write = self.service._write
+        def mutate_before_connection():
+            changes["nested"]["value"] = object()
+            return original_write()
+        with patch.object(self.service, "_write", side_effect=mutate_before_connection):
+            saved = self.service.set_metadata(self.scope, doc.id, changes,
+                                               expected_version=doc.version)
+        self.assertEqual(saved.metadata["nested"]["value"], "validated")

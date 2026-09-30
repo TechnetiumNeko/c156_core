@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 import unittest
 
 from src.storage import (
@@ -54,7 +55,7 @@ class TestConnectionBoundaries(TempPathTestCase):
                 self.fail("未来协议版本不能被打开")
         self.assertEqual(caught.exception.details.get("actual"), 99)
         self.assertEqual(future.read_bytes(), before)
-        with sqlite3.connect(future) as check:
+        with closing(sqlite3.connect(future)) as check:
             self.assertEqual(check.execute("PRAGMA user_version").fetchone()[0], 99)
 
         # Non-WAL target: runtime open refuses and leaves journal mode alone.
@@ -71,7 +72,7 @@ class TestConnectionBoundaries(TempPathTestCase):
             with Database(nonwal).transaction():
                 self.fail("非 WAL 目标不能被运行打开")
         self.assertEqual(nonwal.read_bytes(), before)
-        with sqlite3.connect(nonwal) as check:
+        with closing(sqlite3.connect(nonwal)) as check:
             self.assertEqual(
                 str(check.execute("PRAGMA journal_mode").fetchone()[0]).lower(),
                 "delete",

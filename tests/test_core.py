@@ -353,3 +353,15 @@ class TestErrors(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCyclicMetadata(unittest.TestCase):
+    def test_cyclic_metadata_is_invalid_argument(self):
+        value = {}
+        value["self"] = value
+        with self.assertRaises(InvalidArgument):
+            validate_metadata(value)
+
+    def test_shared_acyclic_containers_are_valid(self):
+        shared = {"items": [1, None]}
+        validate_metadata({"left": shared, "right": shared})

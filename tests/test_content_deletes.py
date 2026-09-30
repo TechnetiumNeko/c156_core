@@ -545,7 +545,9 @@ class TestRecursiveDelete(ContentDeleteTestCase):
             "中文 目录",
             expected_version=chinese.version,
         )
-        self.other_service.create_folder(self.scope, self.scope.root_id, "other")
+        parent_before = self.entry(self.products_id)["version"]
+        self.other_service.create_folder(self.scope, self.products_id, "other")
+        self.assertGreater(self.entry(self.products_id)["version"], parent_before)
 
         after = self.service.prepare_delete(self.scope, ids["tree"])
         self.assertEqual(after.subtree_token, snapshot.subtree_token)
@@ -829,3 +831,11 @@ class TestSoftDeleteEntriesDao(ContentDeleteTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestProtectionMessage(ContentDeleteTestCase):
+    def test_protection_message_includes_delete(self):
+        root = self.service.get_node(self.root_scope, self.fixture.main_id)
+        with self.assertRaises(ProtectedNode) as caught:
+            self.service.delete_node(self.root_scope, root.id, expected_version=root.version)
+        self.assertIn("deleted", str(caught.exception))

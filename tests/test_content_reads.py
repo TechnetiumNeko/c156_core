@@ -551,3 +551,34 @@ class TestStoredMetadataCorruption(ContentReadTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDeepTree(ContentReadTestCase):
+    def test_bounded_deep_tree_preserves_preorder_in_one_transaction(self):
+        import sys
+        from dataclasses import replace
+        from unittest import mock
+        depth = 140
+        with self.fixture.database.transaction(write=True) as connection:
+            repo = self._repo(connection)
+            template = repo.get_entry(self.fixture.products_id)
+            parent = template.object_id
+            for index in range(depth):
+                object_id = f"depth-{index}"
+                repo.insert_object(object_id, "folder", FIXTURE_TIME)
+                repo.insert_entry(replace(template, object_id=object_id, parent_id=parent,
+                                          name=f"d{index}", position=9))
+                parent = object_id
+        limit = sys.getrecursionlimit()
+        try:
+            sys.setrecursionlimit(100)
+            with mock.patch.object(self.service, "_read", wraps=self.service._read) as read:
+                items = self.service.list_tree(self.scope, "depth-0")
+                read.assert_called_once()
+            self.assertEqual([item.node.id for item in items],
+                             [f"depth-{i}" for i in range(depth)])
+            self.assertEqual([item.depth for item in items], list(range(depth)))
+            bounded = self.service.list_tree(self.scope, "depth-0", max_depth=2)
+            self.assertEqual([item.depth for item in bounded], [0, 1, 2])
+        finally:
+            sys.setrecursionlimit(limit)

@@ -754,3 +754,15 @@ class TestMoveNode(ContentMoveTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestProtectedNoops(ContentMoveTestCase):
+    def test_protected_same_name_rename_and_move_reject(self):
+        main = self.service.get_node(self.root_scope, self.fixture.main_id)
+        with self.assertRaises(ProtectedNode):
+            self.service.rename_node(self.root_scope, main.id, main.name,
+                                     expected_version=main.version)
+        with self.assertRaises(ProtectedNode):
+            self.service.move_node(self.root_scope, main.id, main.parent_id,
+                                   expected_version=main.version, name=main.name)
+        self.assertEqual(self.service.get_node(self.root_scope, main.id), main)

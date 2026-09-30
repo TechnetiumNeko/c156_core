@@ -242,3 +242,54 @@ class TestConcurrentDeleteSnapshot(ContentConcurrencyTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSaveAfterMoveOrDelete(ContentConcurrencyTestCase):
+    def test_lock_timeout_is_storage_busy(self):
+        import sqlite3
+        from src.core import StorageBusy
+        self.assertEqual(Database(self.fixture.path).busy_timeout_ms, 5000)
+        with self.fixture.database.transaction() as connection:
+            self.assertEqual(connection.execute("PRAGMA busy_timeout").fetchone()[0], 5000)
+        lock = sqlite3.connect(self.fixture.path, isolation_level=None)
+        try:
+            lock.execute("BEGIN IMMEDIATE")
+            service = ContentService(Database(self.fixture.path, busy_timeout_ms=10))
+            with self.assertRaises(StorageBusy):
+                service.create_folder(self.scope, self.scope.root_id, "blocked")
+        finally:
+            lock.close()
+        self.assertFalse(any(row.name == "blocked" for row in
+                             ContentService(self.fixture.database).list_children(self.scope, self.scope.root_id)))
+
+    def test_save_after_move_in_scope_keeps_base_revision(self):
+        service = ContentService(self.fixture.database)
+        other = ContentService(Database(self.fixture.path))
+        doc = service.read_document(self.scope, self.fixture.concretecream_id)
+        other.move_node(self.scope, doc.id, self.scope.root_id, expected_version=doc.version)
+        saved = service.save_document(self.scope, doc.id, "moved buffer",
+                                      expected_revision_id=doc.revision_id)
+        self.assertEqual(saved.content, "moved buffer")
+
+    def test_save_after_move_outside_scope_fails_without_new_revision(self):
+        from src.core import PathOutsideRoot
+        from tests.helpers import revision_state
+        service = ContentService(self.fixture.database)
+        doc = service.read_document(self.scope, self.fixture.concretecream_id)
+        ContentService(Database(self.fixture.path)).move_node(
+            self.fixture.root_scope, doc.id, self.fixture.admin_id, expected_version=doc.version)
+        before = revision_state(self.fixture.path, doc.id)
+        with self.assertRaises(PathOutsideRoot):
+            service.save_document(self.scope, doc.id, "old buffer", expected_revision_id=doc.revision_id)
+        self.assertEqual(revision_state(self.fixture.path, doc.id), before)
+
+    def test_save_after_delete_fails_without_new_revision(self):
+        from src.core import NotFound
+        from tests.helpers import revision_state
+        service = ContentService(self.fixture.database)
+        doc = service.read_document(self.scope, self.fixture.concretecream_id)
+        ContentService(Database(self.fixture.path)).delete_node(self.scope, doc.id, expected_version=doc.version)
+        before = revision_state(self.fixture.path, doc.id)
+        with self.assertRaises(NotFound):
+            service.save_document(self.scope, doc.id, "old buffer", expected_revision_id=doc.revision_id)
+        self.assertEqual(revision_state(self.fixture.path, doc.id), before)

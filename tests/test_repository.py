@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import inspect
 import unittest
 
@@ -190,21 +192,21 @@ class TestScopedReads(RepositoryTestCase):
 
     def test_subtree_terminates_on_cycle(self):
         with self.database.transaction(write=True) as connection:
-            connection.execute(
-                "UPDATE entries SET parent_id = ? WHERE workspace_id = ? "
-                "AND branch_id = ? AND object_id = ?",
-                (
-                    self.fixture.sibling_b_id,
-                    self.fixture.workspace_id,
-                    self.fixture.branch_id,
-                    self.fixture.folder_id,
-                ),
-            )
-        with self.database.transaction() as connection:
             repo = self.repo(connection)
-            ids = [row.object_id for row in repo.subtree(self.fixture.folder_id)]
-        self.assertEqual(len(ids), 4)
-        self.assertEqual(len(set(ids)), 4)
+            folder = repo.get_entry(self.fixture.folder_id)
+            repo.insert_object("cycle-folder", "folder", FIXTURE_TIME)
+            repo.insert_entry(replace(folder, object_id="cycle-folder", parent_id=folder.object_id,
+                                      name="cycle", position=8))
+            repo.update_entry(folder.object_id, {"parent_id": "cycle-folder"})
+            # Both edges are active folder edges: the traversal must really
+            # encounter its starting node again through the child folder.
+            self.assertEqual(repo.get_entry("cycle-folder").parent_id, folder.object_id)
+            self.assertEqual(repo.get_entry(folder.object_id).parent_id, "cycle-folder")
+        with self.database.transaction() as connection:
+            ids = [row.object_id for row in self.repo(connection).subtree(self.fixture.folder_id)]
+        self.assertEqual(set(ids), {self.fixture.folder_id, self.fixture.document_id,
+                                   self.fixture.sibling_a_id, self.fixture.sibling_b_id, "cycle-folder"})
+        self.assertEqual(len(ids), 5)
 
     def test_next_position_uses_active_children_only(self):
         with self.database.transaction() as connection:
@@ -619,3 +621,28 @@ class TestDaoBoundary(RepositoryTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestOpaqueIds(RepositoryTestCase):
+    def test_both_ctes_preserve_delimiter_containing_ids(self):
+        with self.database.transaction(write=True) as connection:
+            repo = self.repo(connection)
+            folder = repo.get_entry(self.fixture.folder_id)
+            child_id = "prefix," + folder.object_id
+            repo.insert_object(child_id, "folder", FIXTURE_TIME)
+            repo.insert_entry(replace(folder, object_id=child_id,
+                                      parent_id=folder.object_id, name="opaque", position=8))
+            # The descendant ID is a raw delimiter-separated substring of its parent ID.
+            leaf_id = "prefix"
+            repo.insert_object(leaf_id, "folder", FIXTURE_TIME)
+            repo.insert_entry(replace(folder, object_id=leaf_id,
+                                      parent_id=child_id, name="leaf", position=0))
+            self.assertEqual([r.object_id for r in repo.ancestors(child_id)],
+                             [child_id, folder.object_id, self.fixture.root_id])
+            self.assertEqual([r.object_id for r in repo.subtree(child_id)], [child_id, leaf_id])
+
+    def test_update_entry_nonstring_unknown_keys_remain_value_error(self):
+        with self.database.transaction(write=True) as connection:
+            for changes in ({1: "x"}, {None: "x", "bogus": "y"}):
+                with self.subTest(changes=changes), self.assertRaises(ValueError):
+                    self.repo(connection).update_entry(self.fixture.document_id, changes)

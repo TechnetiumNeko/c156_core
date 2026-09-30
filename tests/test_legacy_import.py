@@ -676,3 +676,22 @@ class PublicationAndRecoveryTests(LegacyImportTestCase):
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
+
+
+class OpaqueLegacyIdTests(LegacyImportTestCase):
+    def test_copy_migration_keeps_opaque_document_readable(self):
+        document = self.source / "main/products/concretecream"
+        parent_id = legacy_object_id(document.parent / ".folder")
+        opaque_id = "prefix," + parent_id
+        with legacy_connection(document, write=True) as connection:
+            connection.execute("UPDATE abstract_file SET id = ?", (opaque_id,))
+        with legacy_connection(document.parent / ".folder", write=True) as connection:
+            connection.execute("UPDATE file SET child_id = ? WHERE child_id = ?", (opaque_id, SAMPLE_DOCUMENT_ID))
+        before = self.source_hashes()
+        report = migrate_legacy(self.source, self.target)
+        service = ContentService(Database(self.target))
+        doc = service.read_document(service.default_scope(), opaque_id)
+        self.assertEqual(doc.id, opaque_id)
+        self.assertEqual(doc.content, LEGACY_SAMPLE_DOCUMENT_CONTENT)
+        self.assertEqual(doc.path, "/products/concretecream")
+        self.assertEqual(self.source_hashes(), before)

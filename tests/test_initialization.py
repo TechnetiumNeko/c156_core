@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -225,7 +226,7 @@ class TestInitializeDatabase(TempPathTestCase):
         with self.assertRaises(UnsupportedSchema):
             initialize_database(future)
         self.assertEqual(future.read_bytes(), future_before)
-        with sqlite3.connect(future) as check:
+        with closing(sqlite3.connect(future)) as check:
             self.assertEqual(check.execute("PRAGMA user_version").fetchone()[0], 99)
 
     def test_invalid_default_tree_not_repaired(self):

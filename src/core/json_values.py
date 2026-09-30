@@ -158,7 +158,7 @@ def validate_metadata(value: Mapping[str, Any], *, reject_reserved: bool = True)
     """Validate extension metadata against the strict JSON data model.
 
     Raises :class:`InvalidArgument` for a non-mapping top level, non-string
-    keys, non-finite numbers, non-JSON values, or reserved top-level keys when
+    keys, non-finite numbers, cyclic or non-JSON values, or reserved top-level keys when
     ``reject_reserved`` is true.
     """
 
@@ -167,10 +167,16 @@ def validate_metadata(value: Mapping[str, Any], *, reject_reserved: bool = True)
             "metadata must be a JSON object",
             details={"value_type": type(value).__name__},
         )
-    _validate_object(value, reject_reserved=reject_reserved, top=True)
+    try:
+        _validate_object(value, reject_reserved=reject_reserved, top=True,
+                         active={id(value)})
+    except RecursionError as exc:
+        raise InvalidArgument("metadata exceeds JSON nesting limits") from exc
 
 
-def _validate_object(value: Mapping[Any, Any], *, reject_reserved: bool, top: bool) -> None:
+def _validate_object(
+    value: Mapping[Any, Any], *, reject_reserved: bool, top: bool, active: set[int]
+) -> None:
     for key, item in value.items():
         if not isinstance(key, str):
             raise InvalidArgument(
@@ -182,10 +188,10 @@ def _validate_object(value: Mapping[Any, Any], *, reject_reserved: bool, top: bo
                 "metadata key is reserved",
                 details={"key": key},
             )
-        _validate_json_value(item)
+        _validate_json_value(item, active)
 
 
-def _validate_json_value(value: Any) -> None:
+def _validate_json_value(value: Any, active: set[int]) -> None:
     if value is None or isinstance(value, (bool, str)):
         return
     if isinstance(value, int):
@@ -197,12 +203,19 @@ def _validate_json_value(value: Any) -> None:
                 details={"value": repr(value)},
             )
         return
-    if isinstance(value, Mapping):
-        _validate_object(value, reject_reserved=False, top=False)
-        return
-    if isinstance(value, list):
-        for item in value:
-            _validate_json_value(item)
+    if isinstance(value, (Mapping, list)):
+        identity = id(value)
+        if identity in active:
+            raise InvalidArgument("metadata must not contain cyclic references")
+        active.add(identity)
+        try:
+            if isinstance(value, Mapping):
+                _validate_object(value, reject_reserved=False, top=False, active=active)
+            else:
+                for item in value:
+                    _validate_json_value(item, active)
+        finally:
+            active.remove(identity)
         return
     raise InvalidArgument(
         "metadata value is not valid JSON",

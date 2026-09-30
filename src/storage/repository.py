@@ -73,7 +73,7 @@ WITH RECURSIVE chain (
     SELECT e.workspace_id, e.branch_id, e.object_id, e.parent_id, e.name,
            e.position, e.version, e.current_revision_id, e.metadata_json,
            e.created_at, e.modified_at, e.deleted_at, o.kind, 0,
-           ',' || e.object_id || ','
+           ',' || hex(e.object_id) || ','
     FROM entries AS e
     JOIN objects AS o
       ON o.workspace_id = e.workspace_id AND o.id = e.object_id
@@ -82,7 +82,7 @@ WITH RECURSIVE chain (
     SELECT p.workspace_id, p.branch_id, p.object_id, p.parent_id, p.name,
            p.position, p.version, p.current_revision_id, p.metadata_json,
            p.created_at, p.modified_at, p.deleted_at, po.kind, c.depth + 1,
-           c.visited || p.object_id || ','
+           c.visited || hex(p.object_id) || ','
     FROM chain AS c
     JOIN entries AS p
       ON p.workspace_id = c.workspace_id
@@ -90,7 +90,7 @@ WITH RECURSIVE chain (
      AND p.object_id = c.parent_id
     JOIN objects AS po
       ON po.workspace_id = p.workspace_id AND po.id = p.object_id
-    WHERE instr(c.visited, ',' || p.object_id || ',') = 0
+    WHERE instr(c.visited, ',' || hex(p.object_id) || ',') = 0
 )
 SELECT * FROM chain ORDER BY depth
 """
@@ -104,7 +104,7 @@ WITH RECURSIVE tree (
     SELECT e.workspace_id, e.branch_id, e.object_id, e.parent_id, e.name,
            e.position, e.version, e.current_revision_id, e.metadata_json,
            e.created_at, e.modified_at, e.deleted_at, o.kind,
-           printf('%020d', e.position), ',' || e.object_id || ','
+           printf('%020d', e.position), ',' || hex(e.object_id) || ','
     FROM entries AS e
     JOIN objects AS o
       ON o.workspace_id = e.workspace_id AND o.id = e.object_id
@@ -115,7 +115,7 @@ WITH RECURSIVE tree (
            ch.position, ch.version, ch.current_revision_id, ch.metadata_json,
            ch.created_at, ch.modified_at, ch.deleted_at, co.kind,
            c.sort_path || '/' || printf('%020d', ch.position),
-           c.visited || ch.object_id || ','
+           c.visited || hex(ch.object_id) || ','
     FROM tree AS c
     JOIN entries AS ch
       ON ch.workspace_id = c.workspace_id
@@ -124,7 +124,7 @@ WITH RECURSIVE tree (
      AND ch.deleted_at IS NULL
     JOIN objects AS co
       ON co.workspace_id = ch.workspace_id AND co.id = ch.object_id
-    WHERE instr(c.visited, ',' || ch.object_id || ',') = 0
+    WHERE instr(c.visited, ',' || hex(ch.object_id) || ',') = 0
 )
 SELECT * FROM tree ORDER BY sort_path, object_id
 """
@@ -651,7 +651,7 @@ class Repository:
         unknown = [key for key in changes if key not in _UPDATABLE_COLUMNS]
         if unknown:
             raise ValueError(
-                "update_entry does not accept columns: " + ", ".join(sorted(unknown))
+                "update_entry does not accept columns: " + ", ".join(sorted(repr(key) for key in unknown))
             )
 
         assignments = []
