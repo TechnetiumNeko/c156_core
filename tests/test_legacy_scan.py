@@ -20,6 +20,7 @@ from unittest.mock import patch
 
 from src.core.errors import MigrationError
 from src.storage.legacy import LegacyScan, _walk_source, scan_legacy, source_fingerprint
+from src.storage.management import initialize_database
 from tests.helpers import (
     LEGACY_SAMPLE_DOCUMENT_CONTENT,
     LEGACY_SAMPLE_DOCUMENT_SHA256,
@@ -73,6 +74,16 @@ class LegacyScanTestCase(TempPathTestCase):
 
 
 class SampleScanTests(LegacyScanTestCase):
+    def test_sample_copy_excludes_root_runtime_database(self) -> None:
+        initialize_database(self.source / 'c156.sqlite')
+        before = self.source_hashes()
+        with patch('tests.helpers.SAMPLE_DATA', self.source):
+            copied = copy_sample_data(self.temp_root / 'copied')
+        self.assertFalse((copied / 'c156.sqlite').exists())
+        scan = scan_legacy(copied, target=self.target, imported_at=IMPORTED_AT)
+        self.assertEqual(len(scan.objects), 8)
+        self.assertEqual(self.source_hashes(), before)
+
     def test_sample_scan_preserves_document(self) -> None:
         scan = self.scan()
         self.assertIsInstance(scan, LegacyScan)

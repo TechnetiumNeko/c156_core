@@ -105,7 +105,17 @@ def copy_sample_data(destination: Path) -> Path:
     destination = Path(destination)
     if destination.exists():
         shutil.rmtree(destination)
-    shutil.copytree(SAMPLE_DATA, destination)
+
+    def ignore_runtime(directory, names):
+        if Path(directory) != SAMPLE_DATA:
+            return ()
+        # 运行过 README 的迁移命令后，根目录可能已有正式库。
+        # 测试复制旧样本，不把生成的运行库当作旧容器。
+        return set(names) & {
+            'c156.sqlite', 'c156.sqlite-wal', 'c156.sqlite-shm', 'c156.sqlite-journal',
+        }
+
+    shutil.copytree(SAMPLE_DATA, destination, ignore=ignore_runtime)
     return destination
 
 

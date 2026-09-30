@@ -25,21 +25,22 @@ class TestArchitecture(unittest.TestCase):
         for layer, forbidden in (
             ('cli', ('src.file', 'src.storage.repository', 'sqlite3')),
             ('editor', ('src.file', 'src.storage', 'sqlite3')),
-            ('services', ('src.cli', 'src.editor', 'src.file', 'sqlite3')),
-            ('core', ('src.storage', 'src.services', 'src.cli', 'src.editor', 'src.file', 'sqlite3')),
+            ('web', ('src.cli', 'src.editor', 'src.file', 'src.storage.repository', 'sqlite3')),
+            ('services', ('src.cli', 'src.editor', 'src.web', 'src.file', 'sqlite3')),
+            ('core', ('src.storage', 'src.services', 'src.cli', 'src.editor', 'src.web', 'src.file', 'sqlite3')),
         ):
             for path in (ROOT / 'src' / layer).glob('*.py'):
                 with self.subTest(path=path):
                     tree = ast.parse(path.read_text())
                     for imported in imports(path, tree):
-                        if layer in ('cli', 'editor'):
+                        if layer in ('cli', 'editor', 'web'):
                             self.assertFalse(imported.endswith('.Repository'), imported)
                         self.assertFalse(any(imported == name or imported.startswith(name + '.')
                                              for name in forbidden), imported)
         path = ROOT / 'src/storage/repository.py'
         tree = ast.parse(path.read_text())
         for imported in imports(path, tree):
-            self.assertFalse(imported.startswith(('src.services', 'src.cli', 'src.editor')))
+            self.assertFalse(imported.startswith(('src.services', 'src.cli', 'src.editor', 'src.web')))
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
                 self.assertNotIn(node.func.attr, ('commit', 'rollback', 'connect', 'transaction',
