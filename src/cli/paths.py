@@ -1,82 +1,45 @@
-"""Virtual path handling rooted at ``data/main``."""
+"""Session-local virtual paths, resolved exclusively by ContentService."""
 
-from pathlib import Path
+from ..core.errors import ContentError, NotFound, PathOutsideRoot
+from ..core.models import ContentScope, NodeSnapshot
+from ..services.content import ContentService
 
 
 class VirtualFileSystem:
-    def __init__(self, root: Path):
-        self.root = root.resolve()
-        self.root.mkdir(parents=True, exist_ok=True)
-        self.cwd = self.root
+    def __init__(self, service: ContentService, scope: ContentScope):
+        self.service = service
+        self.scope = scope
+        self.cwd_id = scope.root_id
 
-    def resolve(self, value: str = ".") -> Path:
-        """Resolve a CLI path and reject paths (including symlinks) outside main."""
-        if value in ("", "~"):
-            candidate = self.root
-        elif value.startswith("~/"):
-            candidate = self.root / value[2:]
-        elif value.startswith("/"):
-            # Absolute paths in the CLI are virtual paths, not host paths.
-            candidate = self.root / value.lstrip("/")
-        else:
-            candidate = self.cwd / value
+    def resolve(self, value: str = '.') -> NodeSnapshot:
+        return self.service.resolve_path(self.scope, value, cwd_id=self.cwd_id)
 
-        candidate = candidate.resolve()
+    def display(self, object_id: str | None = None) -> str:
+        return self.service.get_path(self.scope, self.cwd_id if object_id is None else object_id)
+
+    def ensure_cwd(self) -> bool:
         try:
-            candidate.relative_to(self.root)
-        except ValueError as exc:
-            raise ValueError(f"路径超出虚拟根目录: {value}") from exc
-        return candidate
-
-    def display(self, path: Path | None = None) -> str:
-        path = (path or self.cwd).resolve()
-        try:
-            relative = path.relative_to(self.root)
-        except ValueError:
-            return "/"
-        return "/" if str(relative) == "." else f"/{relative.as_posix()}"
+            self.service.get_node(self.scope, self.cwd_id)
+        except (NotFound, PathOutsideRoot):
+            self.cwd_id = self.scope.root_id
+            return True
+        return False
 
     def completion_candidates(self, value: str, directories_only: bool = False) -> list[str]:
-        """Return virtual path candidates for readline completion."""
-        expanded = value
-        if expanded == "~":
-            lookup_parent, render_prefix, leaf = self.root, "~/", ""
-        elif expanded.startswith("~/"):
-            parent_text, leaf = expanded.rsplit("/", 1)
-            parent_text = parent_text or "~"
-            lookup_parent = self.resolve(parent_text)
-            render_prefix = parent_text + "/"
-        elif "/" in expanded:
-            parent_text, leaf = expanded.rsplit("/", 1)
-            if not parent_text:
-                parent_text = "/"
-                render_prefix = "/"
-            else:
-                render_prefix = parent_text.rstrip("/") + "/"
-            lookup_parent = self.resolve(parent_text)
+        if value == '~':
+            parent_text, render_prefix, leaf = '~', '~/', ''
+        elif '/' in value:
+            parent_text, leaf = value.rsplit('/', 1)
+            parent_text = parent_text or '/'
+            render_prefix = value[:len(value) - len(leaf)]
         else:
-            leaf = expanded
-            render_prefix = ""
-            lookup_parent = self.cwd
-
+            parent_text, render_prefix, leaf = '.', '', value
         try:
-            entries = sorted(lookup_parent.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower()))
-        except (OSError, ValueError):
+            parent = self.resolve(parent_text)
+            entries = self.service.list_children(self.scope, parent.id)
+        except ContentError:
             return []
-
-        candidates: list[str] = []
-        for special in (".", "..", "~"):
-            if special.startswith(value):
-                candidates.append(special)
-        for entry in entries:
-            if entry.name == ".folder" or not entry.name.startswith(leaf):
-                continue
-            try:
-                entry.resolve().relative_to(self.root)
-            except (OSError, ValueError):
-                continue
-            is_dir = entry.is_dir()
-            if directories_only and not is_dir:
-                continue
-            candidates.append(f"{render_prefix}{entry.name}{'/' if is_dir else ''}")
-        return candidates
+        entries.sort(key=lambda node: (node.kind != 'folder', node.name.lower()))
+        return [render_prefix + node.name + ('/' if node.kind == 'folder' else '')
+                for node in entries if node.name.startswith(leaf)
+                and (not directories_only or node.kind == 'folder')]

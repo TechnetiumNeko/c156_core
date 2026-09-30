@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+import argparse
 import shlex
+import sys
 from pathlib import Path
 from typing import Callable
+
+from ..core.errors import ContentError
+from ..core.models import ContentScope
+from ..services.content import ContentService
+from ..storage import Database
+from ..storage.errors import StorageError
 
 from .commands import Command, CommandContext, built_in_commands
 from .completion import Completer
@@ -14,11 +22,12 @@ from .paths import VirtualFileSystem
 class CLI:
     def __init__(
         self,
-        root: Path,
+        service: ContentService,
+        scope: ContentScope,
         output: Callable[..., None] = print,
         prompt: Callable[[str], str] = input,
     ):
-        self.fs = VirtualFileSystem(root)
+        self.fs = VirtualFileSystem(service, scope)
         self.output = output
         self.exit_requested = False
         self.commands_by_name: dict[str, Command] = {}
@@ -62,7 +71,16 @@ class CLI:
         if hasattr(self, "context"):
             self.context.commands = tuple(self.commands_by_name.values())
 
+    def _ensure_cwd(self) -> None:
+        if self.fs.ensure_cwd():
+            self.output("当前目录已删除或移出访问范围，已回到 main 根目录。")
+
     def execute(self, line: str) -> bool:
+        try:
+            self._ensure_cwd()
+        except ContentError as exc:
+            self.output(content_error_message(exc))
+            return True
         try:
             words = shlex.split(line)
         except ValueError as exc:
@@ -85,6 +103,8 @@ class CLI:
             return True
         try:
             command.handler(self.context, args)
+        except ContentError as exc:
+            self.output(content_error_message(exc))
         except (OSError, ValueError, RuntimeError) as exc:
             self.output(f"{exc}")
         return not self.exit_requested
@@ -102,9 +122,10 @@ class CLI:
 
         self.output("C156 CLI 已启动。输入 help 查看命令，输入 exit 退出。")
         while True:
+            self._ensure_cwd()
             prompt = f"c156:{self.fs.display()}$ "
             try:
-                line = input(prompt)
+                line = self.context.prompt(prompt)
             except EOFError:
                 self.output("")
                 return 0
@@ -115,13 +136,40 @@ class CLI:
                 return 0
 
 
-def default_data_root() -> Path:
-    # app.py is <repo>/src/cli/app.py
-    return Path(__file__).resolve().parents[2] / "data" / "main"
+def content_error_message(error: ContentError) -> str:
+    labels = {
+        "not_found": "路径或对象不存在",
+        "not_directory": "不是目录",
+        "not_document": "不是文档",
+        "path_outside_root": "路径超出虚拟根目录",
+        "invalid_argument": "参数无效",
+        "invalid_name": "名称无效",
+        "already_exists": "名称已存在",
+        "conflict": "内容已被修改，请重新读取",
+        "storage_busy": "数据库繁忙，请稍后重试",
+        "unsupported_schema": "数据库协议或运行配置无效",
+    }
+    return f"{labels.get(error.code, '内容操作失败')}: {error}"
 
 
-def main() -> int:
-    return CLI(default_data_root()).run()
+def default_database_path() -> Path:
+    return Path(__file__).resolve().parents[2] / "data" / "c156.sqlite"
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="C156 内容命令行")
+    parser.add_argument("--database", type=Path, default=default_database_path())
+    args = parser.parse_args(argv)
+    try:
+        service = ContentService(Database(args.database))
+        scope = service.default_scope()
+    except (ContentError, StorageError, OSError) as exc:
+        print(f"无法启动：数据库缺失、无效或尚未配置 WAL。{exc}", file=sys.stderr)
+        database = shlex.quote(str(args.database))
+        print(f"新建或完成运行配置：python -m src.storage init --database {database}", file=sys.stderr)
+        print(f"导入旧数据或继续迁移配置：python -m src.storage migrate-legacy --source data --database {database}", file=sys.stderr)
+        return 1
+    return CLI(service, scope).run()
 
 
 if __name__ == "__main__":
