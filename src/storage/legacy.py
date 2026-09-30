@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -26,14 +27,12 @@ from typing import Any, Iterator, Mapping
 from ..core.errors import InvalidArgument, InvalidName, MigrationError
 from ..core.json_values import RESERVED_METADATA_KEYS, validate_metadata
 from ..core.paths import validate_name
+from .management import DEFAULT_TOP_LEVEL_NAMES
 
 __all__ = ["LegacyObject", "LegacyScan", "scan_legacy", "source_fingerprint"]
 
 #: Virtual fullpath of the legacy root directory (the physical ``source``).
 ROOT_FULLPATH = "/data"
-
-#: Protected top-level folders every legacy root must contain.
-MANDATORY_TOP_LEVEL_NAMES = ("main", "admin", "resource", "bin")
 
 _TIME_KEYS = ("created_at", "modified_at")
 #: Object kinds this stage can faithfully migrate.  ``executable`` and
@@ -43,12 +42,17 @@ _SUPPORTED_KINDS = frozenset({"folder", "document"})
 _BASE_TABLES = frozenset({"abstract_file", "metadata", "file"})
 _DOCUMENT_TABLES = _BASE_TABLES | {"document_content"}
 _SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
+_TEMP_SIDECAR_SUFFIXES = ("-journal", "-wal", "-shm")
 _REQUIRED_COLUMNS = {
     "abstract_file": frozenset({"singleton", "id", "fullpath", "kind", "parent_id"}),
     "metadata": frozenset({"key", "value"}),
     "file": frozenset({"parent_id", "child_id", "position"}),
     "document_content": frozenset({"singleton", "content"}),
 }
+#: The canonical UUID embedded in Task 9's ``<target>.migrate-<uuid>.tmp`` name.
+_MIGRATION_UUID = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
 
 
 @dataclass(frozen=True)
@@ -364,19 +368,40 @@ def _reject_json_constant(token: str) -> Any:
 # -- source walking and fingerprint ------------------------------------------
 
 
+def _is_target_migration_artifact(path: Path, target: Path) -> bool:
+    """Match Task 9's exclusive ``<target>.migrate-<uuid>.tmp`` namespace.
+
+    Only that exact base name and its SQLite sidecars (``-journal``/``-wal``/
+    ``-shm``) are excluded.  A similarly prefixed name without the canonical
+    UUID and ``.tmp`` base is *not* ignored, so unrelated files still change the
+    fingerprint and abort the scan.
+    """
+
+    if path.parent != target.parent:
+        return False
+    name = path.name
+    prefix = f"{target.name}.migrate-"
+    if not name.startswith(prefix):
+        return False
+    remainder = name[len(prefix) :]
+    for suffix in _TEMP_SIDECAR_SUFFIXES:
+        if remainder.endswith(suffix):
+            remainder = remainder[: -len(suffix)]
+            break
+    if not remainder.endswith(".tmp"):
+        return False
+    return _MIGRATION_UUID.fullmatch(remainder[: -len(".tmp")]) is not None
+
+
 def _is_excluded(path: Path, target: Path) -> bool:
-    """Return whether *path* is the target or a named target artifact."""
+    """Return whether *path* is the target or one of its named artifacts."""
 
     if path == target:
         return True
     for suffix in _SIDECAR_SUFFIXES:
         if path == Path(str(target) + suffix):
             return True
-    if path.parent == target.parent:
-        name = path.name
-        if name.startswith(f"{target.name}.migrate-") and name.endswith(".tmp"):
-            return True
-    return False
+    return _is_target_migration_artifact(path, target)
 
 
 def _sidecar_suffix(path: Path) -> str | None:
@@ -692,7 +717,7 @@ def scan_legacy(source: Path, *, target: Path, imported_at: str) -> LegacyScan:
     top_level_directories = {
         directory.name for directory in directories if directory.parent == source and directory != source
     }
-    missing_defaults = sorted(set(MANDATORY_TOP_LEVEL_NAMES) - top_level_directories)
+    missing_defaults = sorted(set(DEFAULT_TOP_LEVEL_NAMES) - top_level_directories)
     if missing_defaults:
         raise MigrationError(
             "legacy root is missing mandatory default folders",

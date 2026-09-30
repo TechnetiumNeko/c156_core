@@ -11,7 +11,9 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import sqlite3
 import unittest
+import uuid
 from pathlib import Path
 
 from src.core.errors import MigrationError
@@ -245,20 +247,70 @@ class FingerprintTests(LegacyScanTestCase):
 
     def test_target_sidecars_and_temp_namespace_are_excluded(self) -> None:
         target = self.source / "c156.sqlite"
+        temp = self.source / f"{target.name}.migrate-{uuid.uuid4()}.tmp"
         target.write_bytes(b"not a legacy container")
-        Path(str(target) + "-wal").write_bytes(b"wal")
-        Path(str(target) + "-journal").write_bytes(b"journal")
-        Path(str(target) + "-shm").write_bytes(b"shm")
-        temp = self.source / (target.name + ".migrate-abc.tmp")
-        temp.write_bytes(b"tmp")
+        artifacts = [
+            Path(str(target) + "-wal"),
+            Path(str(target) + "-journal"),
+            Path(str(target) + "-shm"),
+            temp,
+            Path(str(temp) + "-journal"),
+            Path(str(temp) + "-wal"),
+            Path(str(temp) + "-shm"),
+        ]
+        for path in artifacts:
+            path.write_bytes(b"artifact")
         before = source_fingerprint(self.source, target=target)
         scan = scan_legacy(self.source, target=target, imported_at=IMPORTED_AT)
         self.assertEqual(len(scan.objects), 8)
         self.assertEqual(scan.source_digest, before)
-        for path in (target, Path(str(target) + "-wal"), Path(str(target) + "-journal"),
-                     Path(str(target) + "-shm"), temp):
+        for path in [target, *artifacts]:
             path.unlink()
         self.assertEqual(source_fingerprint(self.source, target=target), before)
+
+    def test_target_temp_rollback_journal_is_excluded(self) -> None:
+        target = self.source / "c156.sqlite"
+        baseline = source_fingerprint(self.source, target=target)
+        temp = self.source / f"{target.name}.migrate-{uuid.uuid4()}.tmp"
+        connection = sqlite3.connect(temp)
+        try:
+            connection.execute("CREATE TABLE pending (value TEXT)")
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("INSERT INTO pending(value) VALUES ('x')")
+            journal = Path(str(temp) + "-journal")
+            self.assertTrue(journal.exists())
+            # A live rollback journal must not perturb the digest or abort scan.
+            self.assertEqual(source_fingerprint(self.source, target=target), baseline)
+            scan = scan_legacy(self.source, target=target, imported_at=IMPORTED_AT)
+            self.assertEqual(len(scan.objects), 8)
+            self.assertEqual(scan.source_digest, baseline)
+            connection.rollback()
+        finally:
+            connection.close()
+        journal = Path(str(temp) + "-journal")
+        if journal.exists():
+            journal.unlink()
+        temp.unlink()
+        self.assertEqual(source_fingerprint(self.source, target=target), baseline)
+
+    def test_arbitrary_migrate_prefixed_names_are_not_ignored(self) -> None:
+        target = self.source / "c156.sqlite"
+        baseline = source_fingerprint(self.source, target=target)
+        arbitrary = [
+            self.source / f"{target.name}.migrate-not-a-uuid.tmp",
+            self.source / f"{target.name}.migrate-{uuid.uuid4()}",
+            self.source / f"{target.name}.migrate-{uuid.uuid4()}.tmp-backup",
+        ]
+        for path in arbitrary:
+            with self.subTest(name=path.name):
+                path.write_bytes(b"x")
+                self.assertNotEqual(
+                    source_fingerprint(self.source, target=target), baseline
+                )
+                with self.assertRaises(MigrationError):
+                    scan_legacy(self.source, target=target, imported_at=IMPORTED_AT)
+                path.unlink()
+                self.assertEqual(source_fingerprint(self.source, target=target), baseline)
 
     def test_unrelated_temp_file_is_not_ignored(self) -> None:
         (self.source / "notes.tmp").write_bytes(b"x")
@@ -293,10 +345,7 @@ class ValidationAbortTests(LegacyScanTestCase):
 
     def test_missing_required_column_rejected(self) -> None:
         with legacy_connection(self.container("admin/.folder"), write=True) as conn:
-            conn.execute("ALTER TABLE abstract_file RENAME TO abstract_file_old")
-            conn.execute(
-                "CREATE TABLE abstract_file (singleton INTEGER PRIMARY KEY, id TEXT, kind TEXT)"
-            )
+            conn.execute("ALTER TABLE abstract_file DROP COLUMN parent_id")
         self.assertRejected()
 
     def test_missing_abstract_file_row_rejected(self) -> None:
