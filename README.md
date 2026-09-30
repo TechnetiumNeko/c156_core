@@ -1,6 +1,6 @@
 这是 C156 Project 的网站原型代码仓库，使用 Python 和标准库 SQLite 开发。
 
-统一内容内核已接入 CLI 和终端编辑器：运行内容保存在一个 SQLite 数据库中，入口通过 `ContentService` 读写虚拟目录与文档。网页入口仍待实现。协议与验收约定见[设计方案](docs/superpowers/specs/2026-09-30-single-sqlite-content-kernel-design.md)及[实施计划](docs/superpowers/plans/2026-09-30-single-sqlite-content-kernel.md)；最终集成审阅仍待完成。
+统一内容内核已接入 CLI 和终端编辑器：运行内容保存在一个 SQLite 数据库中，入口通过 `ContentService` 读写虚拟目录与文档。网页入口仍待实现。协议与验收约定见[设计方案](docs/superpowers/specs/2026-09-30-single-sqlite-content-kernel-design.md)及[实施计划](docs/superpowers/plans/2026-09-30-single-sqlite-content-kernel.md)；最终集成审阅已通过。
 
 首次使用请选择相应的管理命令，再启动 CLI：
 

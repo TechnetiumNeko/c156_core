@@ -381,7 +381,7 @@ Task 1 的模型固定为 frozen dataclass：`ContentScope(workspace_id, branch_
 
 2026-09-30：按用户选择的 subagent-driven-development 顺序完成 Tasks 1–12，各任务经过独立审查及必要的修复复审。前八项使用 DSH deepseek-flash；任务九途中遇到 402 QUOTA，保留部分产物并按用户备用规则切换原生 gpt-6.1-sol / medium。controller 统一核验并本地提交，未推送实施分支或切换原始数据。
 
-当前验收：controller 全套 `python -m unittest discover -s tests -v` 为 382/382，无警告；diff 检查通过。四个 help 入口不建库；原始／隔离工作区的 8 个旧容器散列一致。所有任务审查已通过，整体集成审查仍待完成。
+当前验收：controller 全套 `python -m unittest discover -s tests -v` 为 386/386，无警告；diff 检查通过。四个 help 入口不建库；原始／隔离工作区的 8 个旧容器散列一致。所有任务审查已通过，整体集成审查及最终定向复审已通过。
 
 ## 实施裁决与代价
 
@@ -406,3 +406,5 @@ Task 1 的模型固定为 frozen dataclass：`ContentScope(workspace_id, branch_
 | Task11 接管 Unicode 空格补全、尾随斜杠和活动编辑器退出边界 | 与 shlex 和既有路径／buffer 契约一致；增加针对性测试，无新命令。 |
 | EditorResult 增加 discard_requested=False | 区分明确 :q! 与普通关闭，保留三参数构造；代价是新增一个编辑器局部可选结果字段。 |
 | Task12 接管循环 metadata、写前编码、opaque ID、深目录遍历等收尾修复 | 关闭已复现问题，保留同一 API／事务／顺序；增加少量验证，不增加恢复、协作或框架功能。 |
+
+整体审查收尾：一次修复波关闭来源目录遍历错误被忽略、生成／隐藏列漏检和非普通文件读取阻塞三项问题。最终 controller 验收 386/386、无警告；来源未切换，实施分支等待用户选择集成方式。
