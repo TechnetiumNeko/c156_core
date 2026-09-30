@@ -10,14 +10,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import sqlite3
 import unittest
 import uuid
 from pathlib import Path
+from unittest.mock import patch
 
 from src.core.errors import MigrationError
-from src.storage.legacy import LegacyScan, scan_legacy, source_fingerprint
+from src.storage.legacy import LegacyScan, _walk_source, scan_legacy, source_fingerprint
 from tests.helpers import (
     LEGACY_SAMPLE_DOCUMENT_CONTENT,
     LEGACY_SAMPLE_DOCUMENT_SHA256,
@@ -588,6 +590,63 @@ class TimeMappingTests(LegacyScanTestCase):
             item for item in scan.report["objects"] if item["id"] == SAMPLE_DOCUMENT_ID
         )
         self.assertEqual(entry["created_at_reason"], "stored")
+
+
+
+
+class ScannerBoundaryTests(LegacyScanTestCase):
+    def test_unreadable_unregistered_directory_rejected(self) -> None:
+        unreadable = self.source / "unregistered"
+        unreadable.mkdir()
+        real_scandir = os.scandir
+
+        def scandir(path):
+            if Path(path) == unreadable:
+                raise PermissionError("unreadable test directory")
+            return real_scandir(path)
+
+        with patch("src.storage.legacy.os.scandir", side_effect=scandir):
+            for operation in (self.scan, lambda: source_fingerprint(self.source, target=self.target)):
+                with self.subTest(operation=operation):
+                    with self.assertRaises(MigrationError) as ctx:
+                        operation()
+                    self.assertIsInstance(ctx.exception.__cause__, PermissionError)
+
+    def test_fifo_rejected_before_reading(self) -> None:
+        fifo = self.source / "pending.pipe"
+        os.mkfifo(fifo)
+        with patch.object(Path, "read_bytes", side_effect=AssertionError("must not read")):
+            for operation in (
+                lambda: _walk_source(self.source, self.target, reject_sidecars=False),
+                lambda: source_fingerprint(self.source, target=self.target),
+                self.scan,
+            ):
+                with self.subTest(operation=operation):
+                    with self.assertRaises(MigrationError) as ctx:
+                        operation()
+                    self.assertEqual(ctx.exception.details.get("path"), str(fifo))
+
+    def test_generated_extra_payload_rejected(self) -> None:
+        for declaration in ("VIRTUAL", "STORED"):
+            with self.subTest(declaration=declaration):
+                self.source = copy_sample_data(self.temp_root / declaration)
+                with legacy_connection(self.doc_container(), write=True) as conn:
+                    conn.execute("DELETE FROM document_content")
+                    conn.execute(
+                        "ALTER TABLE document_content ADD COLUMN extra_payload TEXT "
+                        f"GENERATED ALWAYS AS (content) {declaration}"
+                    )
+                    conn.execute("INSERT INTO document_content(singleton, content) VALUES (1, 'payload')")
+                self.assertRejected()
+
+    def test_generated_expected_column_rejected(self) -> None:
+        with legacy_connection(self.doc_container(), write=True) as conn:
+            conn.execute("ALTER TABLE document_content RENAME TO old_content")
+            conn.execute("CREATE TABLE document_content (singleton INTEGER, content TEXT GENERATED ALWAYS AS ('payload') VIRTUAL)")
+            conn.execute("INSERT INTO document_content(singleton) VALUES (1)")
+            conn.execute("DROP TABLE old_content")
+        with self.assertRaisesRegex(MigrationError, "hidden or generated columns"):
+            self.scan()
 
 
 if __name__ == "__main__":  # pragma: no cover

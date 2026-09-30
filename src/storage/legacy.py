@@ -18,6 +18,7 @@ import json
 import os
 import re
 import sqlite3
+import stat
 import uuid
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
@@ -166,10 +167,14 @@ def _open_readonly(path: Path) -> Iterator[sqlite3.Connection]:
 
 
 def _table_columns(connection: sqlite3.Connection, table: str) -> set[str]:
-    return {
-        row["name"]
-        for row in connection.execute(f'PRAGMA table_info("{table}")')
-    }
+    rows = connection.execute(f'PRAGMA table_xinfo("{table}")').fetchall()
+    unsupported = sorted(row["name"] for row in rows if row["hidden"] != 0)
+    if unsupported:
+        raise MigrationError(
+            "legacy table holds unsupported hidden or generated columns",
+            details={"table": table, "columns": unsupported},
+        )
+    return {row["name"] for row in rows}
 
 
 def _read_container(path: Path, relative_path: str) -> _Container:
@@ -457,8 +462,12 @@ def _walk_source(
 
     directories: list[Path] = []
     files: list[Path] = []
+
+    def raise_walk_error(error: OSError) -> None:
+        raise error
+
     try:
-        walker = os.walk(source)
+        walker = os.walk(source, onerror=raise_walk_error)
         for dirpath, dirnames, filenames in walker:
             dirnames.sort()
             filenames.sort()
@@ -480,6 +489,11 @@ def _walk_source(
                     )
                 if _is_excluded(candidate, target):
                     continue
+                if not stat.S_ISREG(candidate.stat().st_mode):
+                    raise MigrationError(
+                        "legacy source tree must contain only regular files and directories",
+                        details={"path": str(candidate)},
+                    )
                 if reject_sidecars and _sidecar_suffix(candidate) is not None:
                     raise MigrationError(
                         "legacy source holds an unfinished WAL/journal/SHM sidecar",
