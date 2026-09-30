@@ -294,3 +294,37 @@ class CLIWriteTests(TempPathTestCase):
         self.assertTrue(self.cli.execute('edit products/doc'))
         self.assert_pending('Xoriginal\n\n')
         self.assertIsNone(self.cli.context.active_editor)
+
+    def eof_prompt(self, text):
+        self.assertEqual(self.database.active, 0)
+        raise EOFError()
+
+    def test_creation_confirmation_eof_cancels_without_create_or_editor(self):
+        self.cli.context.prompt = self.eof_prompt
+        self.assertTrue(self.cli.execute('edit products/new'))
+        self.assertEqual([n.name for n in self.service.list_children(self.scope, self.folder.id)], ['doc'])
+        self.assertEqual(self.opened, [])
+        self.assertIsNone(self.cli.context.active_editor)
+        self.assertIn('取消', self.output.getvalue())
+        self.assertTrue(self.cli.execute('pwd'))
+
+    def test_eof_while_handling_pending_before_creation_keeps_text_and_base(self):
+        self.during_edit = self.conflict
+        self.cli.execute('edit products/doc')
+        self.cli.context.prompt = self.eof_prompt
+        self.assertTrue(self.cli.execute('edit products/new'))
+        self.assert_pending('用户未保存正文')
+        self.assertEqual(len(self.opened), 1)
+        self.assertEqual([n.name for n in self.service.list_children(self.scope, self.folder.id)], ['doc'])
+        self.assertIsNone(self.cli.context.active_editor)
+        self.assertIn('未保存', self.output.getvalue())
+
+    def test_creation_confirmation_accepts_yes_case_insensitively(self):
+        for answer in ('yes', 'YES', 'Y'):
+            with self.subTest(answer=answer):
+                name = 'new-' + answer
+                self.inputs = [answer]
+                self.results = [EditorResult(False, '', False)]
+                self.assertTrue(self.cli.execute('edit products/' + name))
+                created = self.service.resolve_path(self.scope, '/products/' + name)
+                self.assertEqual(self.service.read_document(self.scope, created.id).content, '')

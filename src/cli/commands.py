@@ -165,7 +165,13 @@ def command_edit(context: CommandContext, args: list[str]) -> None:
         parent, name = creation_target(context, path)
         if context.pending_edit is not None and not handle_pending(context):
             return
-        if context.prompt("文档不存在，是否创建？[y/N] ").strip().lower() != "y":
+        try:
+            answer = context.prompt("文档不存在，是否创建？[y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            context.output("创建已取消。" + ("未保存正文已保留在当前会话。"
+                                      if context.pending_edit is not None else ""))
+            return
+        if answer not in ("y", "yes"):
             return
         target = context.fs.service.create_document(context.fs.scope, parent.id, name)
     pending = context.pending_edit
