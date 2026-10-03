@@ -1,4 +1,5 @@
 """Site administrator account lifecycle, with atomic retention checks."""
+import json
 from dataclasses import replace
 from datetime import timedelta
 from uuid import uuid4
@@ -24,9 +25,14 @@ class AccountService:
         return actor.user_id
 
     @staticmethod
-    def _audit(work, actor, user, event):
+    def _audit(work, actor, before, after, event):
+        def state(user):
+            if user is None:
+                return None
+            return json.dumps({'status': user.status, 'site_admin': user.site_admin,
+                               'version': user.version}, sort_keys=True)
         work.audit.append(AuditEventRecord(str(uuid4()), actor, None, 'accounts.' + event,
-            'user', user.id, None, None, work.now.isoformat()))
+            'user', after.id, state(before), state(after), work.now.isoformat()))
 
     @staticmethod
     def _grant(work, user, purpose):
@@ -52,7 +58,7 @@ class AccountService:
             user = UserRecord(str(uuid4()), login_name, display_name, 'invited', False, 1, 1, now, now)
             work.identity.insert_user(user)
             grant = self._grant(work, user, 'activate')
-            self._audit(work, actor, user, 'create')
+            self._audit(work, actor, None, user, 'create')
             return grant
 
     def _change(self, user_id, *, session_token, expected_version, operation, enabled=None):
@@ -102,7 +108,7 @@ class AccountService:
                 work.identity.revoke_account_tokens(user.id, now=now)
                 work.identity.delete_password_credential(user.id)
             grant = self._grant(work, updated, purpose) if purpose else None
-            self._audit(work, actor, updated, operation)
+            self._audit(work, actor, user, updated, operation)
             return grant or user_view(updated)
 
     def resend_activation(self, user_id, *, session_token, expected_version):

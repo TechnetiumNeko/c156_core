@@ -1,4 +1,5 @@
 """Account lifecycle exercised through real SQLite and authentication."""
+import json
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
@@ -65,7 +66,18 @@ class AccountTests(TempPathTestCase):
                 self.accounts.list_users(session_token=session_token)
             with self.assertRaises(Forbidden):
                 self.accounts.disable_user(user.id, session_token=session_token, expected_version=user.version)
-        self.accounts.disable_user(user.id, session_token=self.token, expected_version=user.version)
+        promoted = self.accounts.set_site_admin(user.id, session_token=self.token, expected_version=user.version, enabled=True)
+        demoted = self.accounts.set_site_admin(user.id, session_token=self.token, expected_version=promoted.version, enabled=False)
+        with self.db.transaction() as connection:
+            events = connection.execute("SELECT before_json,after_json FROM audit_events WHERE event_type='accounts.set_site_admin' AND target_id=? ORDER BY rowid", (user.id,)).fetchall()
+            states = [(json.loads(event['before_json']), json.loads(event['after_json'])) for event in events]
+            self.assertEqual(states, [
+                ({'status': 'active', 'site_admin': False, 'version': user.version},
+                 {'status': 'active', 'site_admin': True, 'version': promoted.version}),
+                ({'status': 'active', 'site_admin': True, 'version': promoted.version},
+                 {'status': 'active', 'site_admin': False, 'version': demoted.version}),
+            ])
+        self.accounts.disable_user(user.id, session_token=self.token, expected_version=demoted.version)
         with self.db.transaction() as connection:
             event = connection.execute("SELECT actor_id,target_id FROM audit_events WHERE event_type='accounts.disable'").fetchone()
             self.assertEqual(tuple(event), (self.admin.id, user.id))
