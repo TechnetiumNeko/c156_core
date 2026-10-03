@@ -8,21 +8,31 @@ from pathlib import Path
 
 from ..core.errors import ContentError
 from ..services.content import ContentService
+from ..services.identity import IdentityService
+from ..services.accounts import AccountService
+from ..services.access import AccessService
+from ..services.unit_of_work import ApplicationUnitOfWork
 from ..storage import Database
 from ..storage.errors import StorageError
 from .api import API
 from .http import Handler
 
 
-def create_server(database_path, port=8000):
+def create_server(database_path, port=8000, *, cookie_secure=False):
     if isinstance(port, bool) or not isinstance(port, int) or not 0 <= port <= 65535:
         raise ValueError('port must be an integer from 0 to 65535')
-    service = ContentService(Database(Path(database_path)))
-    scope = service.default_scope()
-    service.get_node(scope, scope.root_id)
+    if type(cookie_secure) is not bool:
+        raise ValueError("cookie_secure must be boolean")
+    database = Database(Path(database_path))
+    service = ContentService(database)
+    # Startup configuration only: validate fixed topology without reading nodes or bodies.
+    with ApplicationUnitOfWork(database).transaction() as work:
+        scope = work.default_scope()
     server = ThreadingHTTPServer(('127.0.0.1', port), Handler)
     server.daemon_threads = True
-    server.api = API(service, scope, secrets.token_urlsafe(32))
+    server.cookie_secure = cookie_secure
+    server.api = API(service, scope, secrets.token_urlsafe(32), identity_service=IdentityService(database),
+                     accounts=AccountService(database), access=AccessService(database))
     return server
 
 

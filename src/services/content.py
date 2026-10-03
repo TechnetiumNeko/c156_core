@@ -87,19 +87,26 @@ class ContentService:
             return work.authorized_content(scope, work.resolve_principal(session_token)).get_metadata(scope, object_id)
 
     def create_folder(self, scope: ContentScope, parent_id: str, name: str, *, visibility: str='inherit', session_token: str | None) -> NodeSnapshot:
-        self._require_str(parent_id, "parent_id")
-        validate_name(name)
-        with self._uow.name_conflicts({}):
-            with self._write() as work:
-                return self._create(work, scope, parent_id, name, visibility, session_token, document=False)
+        return self._create_public(scope, parent_id, name, visibility, session_token, document=False)
 
     def create_document(self, scope: ContentScope, parent_id: str, name: str, *, content: str='', visibility: str='inherit', session_token: str | None) -> DocumentSnapshot:
+        return self._create_public(scope, parent_id, name, visibility, session_token, document=True, content=content)
+
+    def create_folder_with_access(self, scope, parent_id, name, *, visibility='inherit', session_token):
+        return self._create_public(scope, parent_id, name, visibility, session_token, document=False, with_access=True)
+
+    def create_document_with_access(self, scope, parent_id, name, *, content='', visibility='inherit', session_token):
+        return self._create_public(scope, parent_id, name, visibility, session_token, document=True, content=content, with_access=True)
+
+    def _create_public(self, scope, parent_id, name, visibility, token, *, document, content='', with_access=False):
         self._require_str(parent_id, "parent_id")
         validate_name(name)
-        self._require_str(content, "content")
+        if document:
+            self._require_str(content, "content")
         with self._uow.name_conflicts({}):
             with self._write() as work:
-                return self._create(work, scope, parent_id, name, visibility, session_token, document=True, content=content)
+                return self._create(work, scope, parent_id, name, visibility, token,
+                                    document=document, content=content, with_access=with_access)
 
     @staticmethod
     def _writer(work, scope, token):
@@ -108,7 +115,7 @@ class ContentService:
             raise Unauthenticated('authentication required')
         return work.authorized_content(scope, actor), actor
 
-    def _create(self, work, scope, parent_id, name, visibility, token, *, document, content=''):
+    def _create(self, work, scope, parent_id, name, visibility, token, *, document, content='', with_access=False):
         from uuid import uuid4
         from ..storage.access_repository import OwnershipRecord, PrivacyRecord
         from ..storage.audit_repository import AuditEventRecord
@@ -135,8 +142,13 @@ class ContentService:
             'content.create', 'object', node.id, None, json.dumps(state, sort_keys=True),
             work.now.isoformat()))
         refreshed = work.authorized_content(scope, actor)
-        return (refreshed.read_document(scope, node.id) if document
-                else refreshed.get_node(scope, node.id))
+        snapshot = (refreshed.read_document(scope, node.id) if document
+                    else refreshed.get_node(scope, node.id))
+        if with_access:
+            from .views import NodeAccessView, DocumentAccessView
+            view = DocumentAccessView if document else NodeAccessView
+            return view(snapshot, self._access_view(refreshed, scope, node.id))
+        return snapshot
 
     def read_document(self, scope: ContentScope, object_id: str, *, session_token: str | None) -> DocumentSnapshot:
         self._require_str(object_id, "object_id")
@@ -144,13 +156,23 @@ class ContentService:
             return work.authorized_content(scope, work.resolve_principal(session_token)).read_document(scope, object_id)
 
     def save_document(self, scope: ContentScope, object_id: str, content: str, *, expected_revision_id: str, session_token: str | None) -> DocumentSnapshot:
+        return self._save_public(scope, object_id, content, expected_revision_id, session_token)
+
+    def save_document_with_access(self, scope, object_id, content, *, expected_revision_id, session_token):
+        return self._save_public(scope, object_id, content, expected_revision_id, session_token, with_access=True)
+
+    def _save_public(self, scope, object_id, content, expected_revision_id, token, *, with_access=False):
         self._require_str(object_id, "object_id")
         self._require_str(content, "content")
         self._require_str(expected_revision_id, "expected_revision_id")
         with self._write() as work:
-            operations, _ = self._writer(work, scope, session_token)
+            operations, _ = self._writer(work, scope, token)
             operations.require_write(scope, object_id, 'edit', unfrozen=True)
-            return operations.save_document(scope, object_id, content, expected_revision_id=expected_revision_id)
+            snapshot = operations.save_document(scope, object_id, content, expected_revision_id=expected_revision_id)
+            if with_access:
+                from .views import DocumentAccessView
+                return DocumentAccessView(snapshot, self._access_view(operations, scope, object_id))
+            return snapshot
 
     def set_metadata(self, scope: ContentScope, object_id: str, changes: dict, *, expected_version: int, session_token: str | None) -> NodeSnapshot:
         self._require_str(object_id, "object_id")

@@ -9,6 +9,8 @@ import threading
 from urllib.parse import urlencode
 
 from src.services.content import ContentService
+from src.services.bootstrap import bootstrap_admin
+from src.services.identity import IdentityService
 from src.storage import Database
 from src.storage.management import initialize_database
 from src.web.app import create_server
@@ -21,7 +23,9 @@ class WebTests(TempPathTestCase):
         self.path = self.temp_path()
         initialize_database(self.path)
         self.service = ContentService(Database(self.path))
-        self.scope = self.service.default_scope()
+        bootstrap_admin(Database(self.path), 'owner', 'Owner', 'correct horse battery staple')
+        self.token = IdentityService(Database(self.path)).login('owner', 'correct horse battery staple', source='local').session_token
+        self.scope = self.service.default_scope(session_token=self.token)
         self.server = create_server(self.path, port=0)
         self.addCleanup(self.server.server_close)
         thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -30,18 +34,27 @@ class WebTests(TempPathTestCase):
         self.addCleanup(self.server.shutdown)
         status, data, _ = self.request('GET', '/api/bootstrap')
         self.assertEqual(status, 200)
-        self.root = data['root']
         self.nonce = data['nonce']
+        status, data, _ = self.request('POST', '/api/auth/login', {'login_name': 'owner', 'password': 'correct horse battery staple'})
+        self.assertEqual(status, 200)
+        self.csrf = data['csrf']
+        self.root = self.request('GET', '/api/bootstrap')[1]['root']
 
     def request(self, method, path, data=None, headers=None, raw=None):
         connection = http.client.HTTPConnection(*self.server.server_address, timeout=5)
         values = {'Content-Type': 'application/json', 'X-C156-Nonce': getattr(self, 'nonce', '')}
+        if getattr(self, 'cookie', None):
+            values['Cookie'] = self.cookie
+        if getattr(self, 'csrf', None):
+            values['X-C156-CSRF'] = self.csrf
         values.update(headers or {})
         body = json.dumps(data).encode() if data is not None else raw
         connection.request(method, path, body=body, headers=values)
         response = connection.getresponse()
         payload = response.read()
         result = json.loads(payload) if response.getheader('Content-Type', '').startswith('application/json') else payload
+        if response.getheader('Set-Cookie'):
+            self.cookie = None if 'Max-Age=0' in response.getheader('Set-Cookie') else response.getheader('Set-Cookie').split(';', 1)[0]
         answer = response.status, result, dict(response.getheaders())
         connection.close()
         return answer
@@ -53,25 +66,26 @@ class WebTests(TempPathTestCase):
         status, data, _ = self.request('POST', '/api/document', {'parent_id': folder['id'], 'name': '文章', 'content': '初稿\r\n'})
         self.assertEqual(status, 201)
         document = data['document']
-        self.assertEqual(self.service.read_document(self.scope, document['id']).content, '初稿\r\n')
-        self.service.set_metadata(self.scope, document['id'], {'nested': {'tags': ['a']}}, expected_version=document['version'])
+        self.assertEqual(self.service.read_document(self.scope, document['id'], session_token=self.token).content, '初稿\r\n')
+        self.service.set_metadata(self.scope, document['id'], {'nested': {'tags': ['a']}}, expected_version=document['version'], session_token=self.token)
         status, data, _ = self.request('GET', '/api/document?' + urlencode({'object_id': document['id']}))
         self.assertEqual(data['document']['metadata'], {'nested': {'tags': ['a']}})
         save = {'object_id': document['id'], 'content': '修改', 'expected_revision_id': document['revision_id']}
         self.assertEqual(self.request('PUT', '/api/document', save)[0], 200)
         status, error, _ = self.request('PUT', '/api/document', save)
         self.assertEqual((status, error['error']['code']), (409, 'conflict'))
-        latest = self.service.read_document(self.scope, document['id'])
-        self.service.save_document(self.scope, latest.id, '独立入口', expected_revision_id=latest.revision_id)
+        latest = self.service.read_document(self.scope, document['id'], session_token=self.token)
+        self.service.save_document(self.scope, latest.id, '独立入口', expected_revision_id=latest.revision_id, session_token=self.token)
         self.assertEqual(self.request('GET', '/api/document?' + urlencode({'object_id': latest.id}))[1]['document']['content'], '独立入口')
         children = self.request('GET', '/api/children?' + urlencode({'folder_id': folder['id']}))[1]['nodes']
         self.assertEqual([node['id'] for node in children], [latest.id])
 
     def test_security_validation_and_domain_errors(self):
         payload = {'parent_id': self.root['id'], 'name': 'one'}
-        for headers in ({'Host': 'evil.example'}, {'Origin': 'https://evil.example'}, {'X-C156-Nonce': ''}):
+        for headers in ({'Host': 'evil.example'}, {'Origin': 'https://evil.example'}, {'X-C156-CSRF': ''}):
             self.assertEqual(self.request('POST', '/api/folder', payload, headers)[0], 403)
-        host = 'localhost:4321'
+        self.assertEqual(self.request('POST', '/api/folder', payload, {'Host': 'localhost:4321', 'Origin': 'http://localhost:4321'})[0], 403)
+        host = 'localhost:' + str(self.server.server_port)
         self.assertEqual(self.request('POST', '/api/folder', payload, {'Host': host, 'Origin': 'http://' + host})[0], 201)
         self.assertEqual(self.request('POST', '/api/folder', payload)[0], 409)
         self.assertEqual(self.request('POST', '/api/folder', {**payload, 'name': '../bad'})[0], 422)
@@ -81,8 +95,10 @@ class WebTests(TempPathTestCase):
         self.assertEqual(self.request('POST', '/api/folder', payload, {'Content-Type': 'text/plain'})[0], 400)
         self.assertEqual(self.request('POST', '/api/folder', raw=b'', headers={'Content-Length': str(2 * 1024 * 1024 + 1)})[0], 413)
         self.assertEqual(self.request('GET', '/api/bootstrap?root_id=other')[0], 400)
-        outside = self.root['parent_id']
-        self.assertEqual(self.request('GET', '/api/children?' + urlencode({'folder_id': outside}))[0], 403)
+        self.assertIsNone(self.root['parent_id'])
+        with Database(self.path).transaction() as connection:
+            outside = connection.execute('SELECT parent_id FROM entries WHERE object_id=?', (self.root['id'],)).fetchone()[0]
+        self.assertEqual(self.request('GET', '/api/children?' + urlencode({'folder_id': outside}))[0], 404)
         self.assertEqual(self.request('GET', '/api/document?object_id=missing')[0], 404)
         self.assertEqual(self.request('GET', '/api/document?' + urlencode({'object_id': self.root['id']}))[0], 422)
         for path in ('/data/c156.sqlite', '/../run_cli.py', '/%2e%2e/run_cli.py', '/vendor/LICENSE', '/api/unknown'):
