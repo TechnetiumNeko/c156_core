@@ -21,7 +21,8 @@ from src.core import (
     NotFound,
     PathOutsideRoot,
 )
-from src.services import ContentService
+from src.services import ApplicationUnitOfWork, ContentService
+from src.storage.audit_repository import AuditEventRecord
 from src.storage.errors import ConstraintError
 from src.storage.repository import Repository
 from tests.helpers import (
@@ -531,6 +532,26 @@ class TestSetMetadata(ContentWriteTestCase):
 
 class TestTransactionalRollback(ContentWriteTestCase):
     """An injected failure after earlier DAO writes must undo all of them."""
+
+    def test_content_and_audit_failure_roll_back_together(self):
+        before_counts = self.counts()
+        before_parent = self.entry(self.parent_id)
+        event = AuditEventRecord("test-audit", None, self.scope.workspace_id,
+                                 "content.created", "document", "target",
+                                 None, None, "2026-10-03T00:00:00+00:00")
+        with self.assertRaises(ConstraintError):
+            with ApplicationUnitOfWork(self.fixture.database).transaction(write=True) as work:
+                work.content(self.scope).create_document(
+                    self.scope, self.parent_id, "audit-rollback", content="body")
+                work.audit.append(event)
+                # A real primary-key violation after both repositories wrote.
+                work.audit.append(event)
+        self.assertEqual(self.counts(), before_counts)
+        self.assertEqual(self.entry(self.parent_id), before_parent)
+        with self.fixture.database.transaction() as connection:
+            self.assertEqual(connection.execute(
+                "SELECT count(*) FROM audit_events WHERE id = ?", (event.id,)
+            ).fetchone()[0], 0)
 
     def test_create_document_failure_rolls_back_object_and_revision(self):
         before_counts = self.counts()

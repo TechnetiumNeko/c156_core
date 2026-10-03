@@ -101,7 +101,7 @@ class Database:
             ) from exc
         if version != SCHEMA_VERSION:
             raise SchemaError(
-                "unsupported database protocol version",
+                "unsupported database protocol version; initialize a new database path",
                 details={
                     "expected": SCHEMA_VERSION,
                     "actual": version,
@@ -196,7 +196,7 @@ class Database:
                 ) from exc
             if version != SCHEMA_VERSION:
                 raise SchemaError(
-                    "unsupported database protocol version",
+                    "unsupported database protocol version; initialize a new database path",
                     details={
                         "expected": SCHEMA_VERSION,
                         "actual": version,
