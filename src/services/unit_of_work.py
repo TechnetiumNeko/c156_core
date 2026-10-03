@@ -59,6 +59,27 @@ class _ApplicationTransaction:
         self._require_active()
         return AccessRepository(self._connection, workspace_id=scope.workspace_id, branch_id=scope.branch_id)
 
+    def policy(self, scope, principal):
+        """Copy authorization records into one immutable transaction snapshot."""
+        from ..access.policy import AccessPolicy
+        from ..core.errors import NotFound
+        access = self.access(scope)
+        settings = access.get_settings()
+        if settings is None:
+            raise NotFound("Object not found")
+        ownership = access.list_ownership()
+        return AccessPolicy(principal,
+            access.get_membership(principal.user_id) if principal.user_id else None,
+            settings, rules=access.list_rules(),
+            privacy={r.object_id: r.owner_id for r in access.list_privacy()},
+            locks={r.object_id: r.locked_by for r in access.list_locks()},
+            ownership={r.object_id: r.creator_id for r in ownership})
+
+    def authorized_content(self, scope, principal):
+        return ContentOperations(Repository(self._connection,
+            workspace_id=scope.workspace_id, branch_id=scope.branch_id),
+            policy=self.policy(scope, principal))
+
     def default_scope(self) -> ContentScope:
         self._require_active()
         root_scope = validate_default_tree(self._connection)

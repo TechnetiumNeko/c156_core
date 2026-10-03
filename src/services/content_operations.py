@@ -52,8 +52,9 @@ def _reject_json_constant(token: str) -> None:
 class ContentOperations:
     """Content operations that never open or finish a transaction."""
 
-    def __init__(self, repository: Repository) -> None:
+    def __init__(self, repository: Repository, *, policy=None) -> None:
         self._repo = repository
+        self._policy = policy
 
     def _repository(self, scope: ContentScope) -> Repository:
         if (scope.workspace_id, scope.branch_id) != (self._repo.workspace_id, self._repo.branch_id):
@@ -89,6 +90,7 @@ class ContentOperations:
         else:
             start_id = scope.root_id if cwd_id is None else cwd_id
             current = self._resolve_cwd(repo, scope, start_id)
+        self._authorize(current.object_id)
         for part in parsed.parts:
             if current.kind != "folder":
                 raise NotDirectory(
@@ -103,9 +105,9 @@ class ContentOperations:
             child = repo.find_child(current.object_id, part)
             if child is None:
                 raise NotFound(
-                    "virtual path segment does not exist",
-                    details={"parent_id": current.object_id, "segment": part},
+                    "Object not found",
                 )
+            self._authorize(child.object_id)
             current = child
         if parsed.trailing_slash and current.kind != "folder":
             raise NotDirectory(
@@ -128,7 +130,7 @@ class ContentOperations:
             )
         return [
             self._snapshot(repo, scope, child)
-            for child in repo.list_children(folder_id)
+            for child in repo.list_children(folder_id) if self._visible(child.object_id)
         ]
 
 
@@ -166,7 +168,7 @@ class ContentOperations:
                 continue
             children = []
             for child in repo.list_children(record.object_id):
-                if child.object_id not in visited:
+                if child.object_id not in visited and self._visible(child.object_id):
                     visited.add(child.object_id)
                     children.append((child, depth + 1))
             pending.extend(reversed(children))
@@ -589,6 +591,8 @@ class ContentOperations:
         )
         self._require_unprotected(repo, entry)
         records = repo.subtree(folder_id)
+        for record in records:
+            self._authorize(record.object_id, scope=scope)
         if not records or records[0].object_id != folder_id:
             raise UnsupportedSchema(
                 "active folder has no active subtree",
@@ -915,6 +919,34 @@ class ContentOperations:
         return entry
 
 
+    def _authorize(self, object_id, *, scope=None):
+        if self._policy is None:
+            return
+        repo = self._repo
+        chain = tuple(reversed(repo.ancestors(object_id)))
+        root = repo.get_branch_root_id()
+        if (not chain or chain[0].object_id != root or chain[0].parent_id is not None
+                or any(r.deleted_at is not None for r in chain)
+                or (scope is not None and not any(r.object_id == scope.root_id for r in chain))
+                or not self._policy.can_read(chain)):
+            raise NotFound("Object not found")
+
+    def _visible(self, object_id):
+        try:
+            self._authorize(object_id)
+            return True
+        except NotFound:
+            return False
+
+    def _presentation_position(self, scope, entry):
+        if self._policy is None:
+            return entry.position
+        if entry.object_id == scope.root_id:
+            return 0
+        visible = [r.object_id for r in self._repo.list_children(entry.parent_id)
+                   if self._visible(r.object_id)]
+        return visible.index(entry.object_id)
+
     def _require_scope_root(
         self, repo: Repository, scope: ContentScope
     ) -> EntryRecord:
@@ -940,6 +972,7 @@ class ContentOperations:
         domain error instead of looping.
         """
 
+        self._authorize(object_id, scope=scope)
         entry = repo.get_entry(object_id)
         if entry is None or entry.deleted_at is not None:
             raise NotFound(
@@ -982,7 +1015,7 @@ class ContentOperations:
             if record.deleted_at is not None:
                 raise NotFound(
                     "object has a deleted ancestor",
-                    details={
+                    details={"object_id": object_id} if self._policy is not None else {
                         "object_id": object_id,
                         "ancestor_id": record.object_id,
                     },
@@ -990,7 +1023,7 @@ class ContentOperations:
             if record.kind != "folder":
                 raise NotDirectory(
                     "object has a non-folder ancestor",
-                    details={
+                    details={"object_id": object_id} if self._policy is not None else {
                         "object_id": object_id,
                         "ancestor_id": record.object_id,
                     },
@@ -1039,8 +1072,8 @@ class ContentOperations:
             id=entry.object_id,
             kind=entry.kind,
             name=entry.name,
-            parent_id=entry.parent_id,
-            position=entry.position,
+            parent_id=None if self._policy is not None and entry.object_id == scope.root_id else entry.parent_id,
+            position=self._presentation_position(scope, entry),
             version=entry.version,
             path=self._display_path(repo, scope, entry),
             created_at=entry.created_at,

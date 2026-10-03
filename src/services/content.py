@@ -1,6 +1,6 @@
-"""Temporary unauthed facade for regression validation during extraction.
+"""Application content facade; every public read resolves explicit identity.
 
-Identity enforcement replaces this facade in the approved integration tasks.
+Write authorization is integrated in the following approved tasks.
 """
 from __future__ import annotations
 
@@ -17,8 +17,8 @@ from .unit_of_work import ApplicationUnitOfWork
 __all__ = ["ContentService"]
 
 class ContentService:
-    def __init__(self, database: Database) -> None:
-        self._uow = ApplicationUnitOfWork(database)
+    def __init__(self, database: Database, *, clock=None) -> None:
+        self._uow = ApplicationUnitOfWork(database, clock=clock)
 
     _require_str = staticmethod(ContentOperations._require_str)
     _require_positive_version = staticmethod(ContentOperations._require_positive_version)
@@ -29,28 +29,31 @@ class ContentService:
     def _write(self):
         return self._uow.transaction(write=True)
 
-    def default_scope(self) -> ContentScope:
+    def default_scope(self, *, session_token: str | None) -> ContentScope:
         with self._uow.transaction() as work:
-            return work.default_scope()
+            principal = work.resolve_principal(session_token)
+            scope = work.default_scope()
+            work.authorized_content(scope, principal).get_node(scope, scope.root_id)
+            return scope
 
-    def get_node(self, scope: ContentScope, object_id: str) -> NodeSnapshot:
+    def get_node(self, scope: ContentScope, object_id: str, *, session_token: str | None) -> NodeSnapshot:
         with self._read() as work:
-            return work.content(scope).get_node(scope, object_id)
+            return work.authorized_content(scope, work.resolve_principal(session_token)).get_node(scope, object_id)
 
-    def get_path(self, scope: ContentScope, object_id: str) -> str:
+    def get_path(self, scope: ContentScope, object_id: str, *, session_token: str | None) -> str:
         with self._read() as work:
-            return work.content(scope).get_path(scope, object_id)
+            return work.authorized_content(scope, work.resolve_principal(session_token)).get_path(scope, object_id)
 
-    def resolve_path(self, scope: ContentScope, path: str, *, cwd_id: str | None=None) -> NodeSnapshot:
+    def resolve_path(self, scope: ContentScope, path: str, *, cwd_id: str | None=None, session_token: str | None) -> NodeSnapshot:
         parse_path(path)
         with self._read() as work:
-            return work.content(scope).resolve_path(scope, path, cwd_id=cwd_id)
+            return work.authorized_content(scope, work.resolve_principal(session_token)).resolve_path(scope, path, cwd_id=cwd_id)
 
-    def list_children(self, scope: ContentScope, folder_id: str) -> list[NodeSnapshot]:
+    def list_children(self, scope: ContentScope, folder_id: str, *, session_token: str | None) -> list[NodeSnapshot]:
         with self._read() as work:
-            return work.content(scope).list_children(scope, folder_id)
+            return work.authorized_content(scope, work.resolve_principal(session_token)).list_children(scope, folder_id)
 
-    def list_tree(self, scope: ContentScope, folder_id: str, *, max_depth: int | None=None) -> list[TreeItem]:
+    def list_tree(self, scope: ContentScope, folder_id: str, *, max_depth: int | None=None, session_token: str | None) -> list[TreeItem]:
         if max_depth is not None and (
             isinstance(max_depth, bool)
             or not isinstance(max_depth, int)
@@ -61,11 +64,11 @@ class ContentService:
                 details={"max_depth": max_depth},
             )
         with self._read() as work:
-            return work.content(scope).list_tree(scope, folder_id, max_depth=max_depth)
+            return work.authorized_content(scope, work.resolve_principal(session_token)).list_tree(scope, folder_id, max_depth=max_depth)
 
-    def get_metadata(self, scope: ContentScope, object_id: str) -> dict:
+    def get_metadata(self, scope: ContentScope, object_id: str, *, session_token: str | None) -> dict:
         with self._read() as work:
-            return work.content(scope).get_metadata(scope, object_id)
+            return work.authorized_content(scope, work.resolve_principal(session_token)).get_metadata(scope, object_id)
 
     def create_folder(self, scope: ContentScope, parent_id: str, name: str) -> NodeSnapshot:
         self._require_str(parent_id, "parent_id")
@@ -82,10 +85,10 @@ class ContentService:
             with self._write() as work:
                 return work.content(scope).create_document(scope, parent_id, name, content=content)
 
-    def read_document(self, scope: ContentScope, object_id: str) -> DocumentSnapshot:
+    def read_document(self, scope: ContentScope, object_id: str, *, session_token: str | None) -> DocumentSnapshot:
         self._require_str(object_id, "object_id")
         with self._read() as work:
-            return work.content(scope).read_document(scope, object_id)
+            return work.authorized_content(scope, work.resolve_principal(session_token)).read_document(scope, object_id)
 
     def save_document(self, scope: ContentScope, object_id: str, content: str, *, expected_revision_id: str) -> DocumentSnapshot:
         self._require_str(object_id, "object_id")
@@ -126,10 +129,10 @@ class ContentService:
             with self._write() as work:
                 return work.content(scope).move_node(scope, object_id, parent_id, expected_version=expected_version, name=name)
 
-    def prepare_delete(self, scope: ContentScope, folder_id: str) -> DeleteSnapshot:
+    def prepare_delete(self, scope: ContentScope, folder_id: str, *, session_token: str | None) -> DeleteSnapshot:
         self._require_str(folder_id, "folder_id")
         with self._read() as work:
-            return work.content(scope).prepare_delete(scope, folder_id)
+            return work.authorized_content(scope, work.resolve_principal(session_token)).prepare_delete(scope, folder_id)
 
     def delete_node(self, scope: ContentScope, object_id: str, *, expected_version: int, recursive: bool=False, expected_subtree_token: str | None=None) -> None:
         self._require_str(object_id, "object_id")
@@ -155,3 +158,94 @@ class ContentService:
             )
         with self._write() as work:
             return work.content(scope).delete_node(scope, object_id, expected_version=expected_version, recursive=recursive, expected_subtree_token=expected_subtree_token)
+
+    @staticmethod
+    def _access_view(operations, scope, object_id):
+        from ..access.models import ContentAccessView
+        from ..access.policy import ACTIONS
+        policy = operations._policy
+        entry = operations.get_entry(scope, object_id)
+        chain = operations.ancestor_chain(object_id)
+        member = policy.role is not None
+        lock = policy.locks.get(object_id)
+        own_lock = member and lock == policy.principal.user_id
+        actions = []
+        protected = object_id in operations._protected_ids(operations._repo)
+        for action in ACTIONS:
+            if not policy.decide(chain, action).allowed:
+                continue
+            if action == 'edit' and entry.kind != 'document':
+                continue
+            if action in ('rename', 'move', 'delete') and protected:
+                continue
+            if action == 'move' and not policy.management:
+                continue
+            if action in ('edit', 'rename', 'move', 'delete'):
+                records = (entry,) if entry.kind == 'document' else operations._repo.subtree(object_id)
+                if action == 'delete' and any(not policy.decide(
+                        tuple(reversed(operations._repo.ancestors(r.object_id))), 'delete').allowed
+                        for r in records):
+                    continue
+                if any(r.kind == 'document' and r.object_id in policy.locks
+                       and (not member or policy.locks[r.object_id] != policy.principal.user_id)
+                       for r in records):
+                    continue
+            actions.append(action)
+        can_freeze = (entry.kind == 'document' and member
+            and policy.decide(chain, 'edit').allowed
+            and (policy.management or policy.ownership.get(object_id) == policy.principal.user_id)
+            and (lock is None or own_lock))
+        can_unfreeze = (entry.kind == 'document' and member
+            and (policy.management or own_lock))
+        return ContentAccessView(policy.version, tuple(actions),
+            'private' if object_id in policy.privacy else 'inherit',
+            lock is not None, can_freeze, can_unfreeze)
+
+    def describe_access(self, scope, object_id, *, session_token):
+        with self._read() as work:
+            operations = work.authorized_content(scope, work.resolve_principal(session_token))
+            return self._access_view(operations, scope, object_id)
+
+    def get_node_with_access(self, scope, object_id, *, session_token):
+        from .views import NodeAccessView
+        with self._read() as work:
+            operations = work.authorized_content(scope, work.resolve_principal(session_token))
+            return NodeAccessView(operations.get_node(scope, object_id),
+                self._access_view(operations, scope, object_id))
+
+    def read_document_with_access(self, scope, object_id, *, session_token):
+        from .views import DocumentAccessView
+        with self._read() as work:
+            operations = work.authorized_content(scope, work.resolve_principal(session_token))
+            return DocumentAccessView(operations.read_document(scope, object_id),
+                self._access_view(operations, scope, object_id))
+
+    def list_children_with_access(self, scope, folder_id, *, session_token):
+        from .views import NodeAccessView
+        with self._read() as work:
+            operations = work.authorized_content(scope, work.resolve_principal(session_token))
+            return tuple(NodeAccessView(node, self._access_view(operations, scope, node.id))
+                for node in operations.list_children(scope, folder_id))
+
+    def bootstrap(self, *, session_token):
+        from .views import BootstrapView, NodeAccessView
+        from ..identity.models import SessionView, user_view
+        from ..identity.tokens import token_digest
+        from ..core.errors import NotFound
+        with self._read() as work:
+            principal = work.resolve_principal(session_token)
+            initialized = bool(work.identity.list_users())
+            if principal.user_id is None:
+                return BootstrapView(initialized, None, None, None, None)
+            session = work.identity.get_session(token_digest(session_token))
+            session_view = SessionView(user_view(work.identity.get_user(principal.user_id)),
+                session.csrf_token, session.expires_at)
+            scope = work.default_scope()
+            operations = work.authorized_content(scope, principal)
+            try:
+                root = NodeAccessView(operations.get_node(scope, scope.root_id),
+                    self._access_view(operations, scope, scope.root_id))
+            except NotFound:
+                root = None
+            return BootstrapView(initialized, session_view, operations._policy.role,
+                operations._policy.version, root)

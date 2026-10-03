@@ -132,6 +132,11 @@ class AccessRepository:
     def delete_user_rules(self, user_id: str) -> None:
         self.connection.execute("DELETE FROM access_rules WHERE workspace_id=? AND subject_type='user' AND subject_user_id=?", (self.workspace_id,user_id))
 
+    def list_ownership(self) -> tuple[OwnershipRecord, ...]:
+        return tuple(OwnershipRecord(**dict(r)) for r in self.connection.execute(
+            'SELECT * FROM content_ownership WHERE workspace_id=? ORDER BY object_id',
+            (self.workspace_id,)))
+
     def get_ownership(self, object_id: str) -> OwnershipRecord | None:
         row = self.connection.execute('SELECT * FROM content_ownership WHERE workspace_id=? AND object_id=?', (self.workspace_id,object_id)).fetchone()
         return OwnershipRecord(**dict(row)) if row else None
