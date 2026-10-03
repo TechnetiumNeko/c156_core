@@ -4,7 +4,7 @@ from dataclasses import replace
 from datetime import timedelta
 from uuid import uuid4
 
-from ..core.errors import AlreadyExists, Conflict, Forbidden, InvalidArgument, NotFound
+from ..core.errors import AlreadyExists, Conflict, Forbidden, InvalidArgument, NotFound, Unauthenticated
 from ..identity.models import AccountTokenGrant, user_view
 from ..identity.tokens import new_token, token_digest, ACTIVATION_HOURS, RESET_HOURS
 from ..identity.validation import normalize_login_name, validate_display_name
@@ -20,6 +20,8 @@ class AccountService:
     @staticmethod
     def _admin(work, token):
         actor = work.resolve_principal(token)
+        if actor.user_id is None:
+            raise Unauthenticated('authentication required')
         if not actor.site_admin:
             raise Forbidden('site administrator required')
         return actor.user_id

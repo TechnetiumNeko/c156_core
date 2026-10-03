@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 from src.access.models import AccessRule
-from src.core.errors import Conflict, Forbidden, InvalidArgument, NotFound
+from src.core.errors import Conflict, Forbidden, InvalidArgument, NotFound, Unauthenticated
 from src.services.access import AccessService
 from src.services.accounts import AccountService
 from src.services.bootstrap import bootstrap_admin
@@ -57,8 +57,15 @@ class AccessManagementTests(TempPathTestCase):
         site_token = self.identity.login('target', PASSWORD, source='local').session_token
         with self.assertRaises(Forbidden):
             self.access.workspace_access(self.scope, session_token=site_token)
+        for call in (
+                lambda: self.access.workspace_access(self.scope, session_token=None),
+                lambda: self.access.object_access(self.scope, self.scope.root_id, session_token=None)):
+            with self.assertRaises(Unauthenticated):
+                call()
+        self.access.add_member(self.scope, 'target', 'reader', session_token=self.token, expected_version=version)
         with self.assertRaises(Forbidden):
-            self.access.object_access(self.scope, self.scope.root_id, session_token=None)
+            self.access.workspace_access(self.scope, session_token=site_token)
+        version += 1
         self.assertEqual(self.version(), version)
 
     def test_versions_noop_and_rule_inheritance_remove_rejoin(self):

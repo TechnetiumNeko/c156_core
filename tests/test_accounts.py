@@ -61,10 +61,10 @@ class AccountTests(TempPathTestCase):
         grant = self.create()
         user = self.identity.activate(grant.token, PASSWORD, source='local')
         token = self.identity.login('member', PASSWORD, source='local').session_token
-        for session_token in (None, token):
-            with self.assertRaises(Forbidden):
+        for session_token, error in ((None, Unauthenticated), (token, Forbidden)):
+            with self.assertRaises(error):
                 self.accounts.list_users(session_token=session_token)
-            with self.assertRaises(Forbidden):
+            with self.assertRaises(error):
                 self.accounts.disable_user(user.id, session_token=session_token, expected_version=user.version)
         promoted = self.accounts.set_site_admin(user.id, session_token=self.token, expected_version=user.version, enabled=True)
         demoted = self.accounts.set_site_admin(user.id, session_token=self.token, expected_version=promoted.version, enabled=False)

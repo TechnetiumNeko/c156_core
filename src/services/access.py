@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from ..access.models import AccessRule, MembershipView, WorkspaceAccessView, ObjectAccessView
 from ..access.policy import AccessPolicy, ACTIONS
-from ..core.errors import Conflict, Forbidden, InvalidArgument, NotFound
+from ..core.errors import Conflict, Forbidden, InvalidArgument, NotFound, Unauthenticated
 from ..identity.models import user_view
 from ..identity.validation import normalize_login_name
 from ..storage.access_repository import MembershipRecord, AccessRuleRecord
@@ -23,6 +23,8 @@ class AccessService:
     @staticmethod
     def _manager(work, scope, token, expected_version=_READ_ONLY):
         actor = work.resolve_principal(token)
+        if actor.user_id is None:
+            raise Unauthenticated('authentication required')
         content = work.content(scope)
         content.get_entry(scope, scope.root_id)
         repo = work.access(scope)
