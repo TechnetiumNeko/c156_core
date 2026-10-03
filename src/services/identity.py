@@ -129,9 +129,13 @@ class IdentityService:
 
     def change_password(self, old_password, new_password, *, session_token, source):
         # Source accounting also persists when the supplied session is invalid.
+        invalid_token = not isinstance(session_token, str) or not session_token
+        digest = token_digest(session_token if not invalid_token else 'invalid')
         with self._uow.transaction() as work:
-            session = work.identity.get_session(token_digest(session_token)) if session_token else None
-        self._throttle(source, 'password', session.user_id if session else token_digest(session_token or 'invalid'))
+            session = work.identity.get_session(digest) if not invalid_token else None
+        self._throttle(source, 'password', session.user_id if session else digest)
+        if invalid_token:
+            self._fail()
         validate_password(new_password)
         with self._uow.transaction() as work:
             principal = work.resolve_principal(session_token)

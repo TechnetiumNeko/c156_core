@@ -130,6 +130,11 @@ class IdentityTests(TempPathTestCase):
         with self.db.transaction() as connection:
             rows = connection.execute('SELECT bucket_type, attempts FROM auth_throttles').fetchall()
             self.assertEqual(dict(rows), {'source':11,'login':11})
+        with self.assertRaises(Unauthenticated):
+            self.service.change_password(PASSWORD, PASSWORD, session_token=123, source='malformed')
+        with self.db.transaction() as connection:
+            self.assertEqual(connection.execute("SELECT attempts FROM auth_throttles WHERE bucket_type='source' AND bucket_key='malformed'").fetchone()[0], 1)
+            self.assertEqual(connection.execute("SELECT attempts FROM auth_throttles WHERE bucket_type='password' AND bucket_key=?", (token_digest('invalid'),)).fetchone()[0], 1)
         self.now += timedelta(minutes=15)
         self.grant()
         for index in range(59):
