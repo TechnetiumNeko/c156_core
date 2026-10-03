@@ -55,6 +55,12 @@ class TestArchitecture(unittest.TestCase):
                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
                     self.assertNotIn(node.func.attr, ('execute', 'executemany', 'executescript'))
 
+        path = ROOT / 'src/services/content_operations.py'
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                self.assertNotIn(node.func.attr, ('transaction', 'connect', 'commit', 'rollback',
+                                                  'management_connection'))
+
     def test_runtime_paths_do_not_scan_host_content(self):
         # app may locate its database, and editor may read its own static help.md.
         for filename in ('paths.py', 'commands.py', 'completion.py'):

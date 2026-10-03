@@ -34,6 +34,7 @@ from tests.helpers import (
     entry_state,
     revision_state,
     seed_content_read_fixture,
+    seed_test_actors,
     table_counts,
 )
 
@@ -46,6 +47,7 @@ class ContentMoveTestCase(TempPathTestCase):
     def setUp(self) -> None:
         super().setUp()
         self.fixture = seed_content_read_fixture(self.temp_path())
+        self.token = seed_test_actors(self.fixture.database, self.fixture.workspace_id)["owner"].session_token
         self.service = ContentService(self.fixture.database)
         self.scope = self.fixture.main_scope
         self.root_scope = self.fixture.root_scope
@@ -62,7 +64,7 @@ class ContentMoveTestCase(TempPathTestCase):
         return revision_state(self.fixture.path, object_id)
 
     def node(self, object_id: str):
-        return self.service.get_node(self.root_scope, object_id)
+        return self.service.get_node(self.root_scope, object_id, session_token=self.token)
 
     def sibling_scope(self) -> ContentScope:
         return ContentScope(
@@ -74,14 +76,15 @@ class ContentMoveTestCase(TempPathTestCase):
 
 class TestRenameNode(ContentMoveTestCase):
     def test_rename_folder_keeps_ids_descendant_paths_and_revisions(self):
-        before = self.service.get_node(self.scope, self.products_id)
-        before_child = self.service.get_node(self.scope, self.document_id)
+        before = self.service.get_node(self.scope, self.products_id, session_token=self.token)
+        before_child = self.service.get_node(self.scope, self.document_id, session_token=self.token)
         before_revisions = self.revisions(self.document_id)
         before_root = self.entry(self.scope.root_id)
         before_workspace_root = self.entry(self.fixture.root_id)
 
         after = self.service.rename_node(
-            self.scope, self.products_id, "goods", expected_version=before.version
+            self.scope, self.products_id, "goods", expected_version=before.version,
+            session_token=self.token,
         )
 
         self.assertEqual(after.id, self.products_id)
@@ -95,15 +98,15 @@ class TestRenameNode(ContentMoveTestCase):
         self.assertNotEqual(after.modified_at, before.modified_at)
 
         # Descendants keep their ids and only gain the new displayed path.
-        child = self.service.get_node(self.scope, self.document_id)
+        child = self.service.get_node(self.scope, self.document_id, session_token=self.token)
         self.assertEqual(child.id, before_child.id)
         self.assertEqual(child.path, "/goods/concretecream")
         self.assertEqual(
-            self.service.get_path(self.scope, self.fixture.draft_id),
+            self.service.get_path(self.scope, self.fixture.draft_id, session_token=self.token),
             "/goods/草稿 二",
         )
         self.assertEqual(self.revisions(self.document_id), before_revisions)
-        self.assertEqual(self.service.read_document(self.scope, self.document_id).content, "正文内容")
+        self.assertEqual(self.service.read_document(self.scope, self.document_id, session_token=self.token).content, "正文内容")
 
         # The direct parent (main) is the only ancestor touched.
         root = self.entry(self.scope.root_id)
@@ -113,11 +116,12 @@ class TestRenameNode(ContentMoveTestCase):
         self.assertEqual(self.entry(self.fixture.root_id), before_workspace_root)
 
     def test_rename_document_keeps_content_and_revision(self):
-        before = self.service.read_document(self.scope, self.document_id)
+        before = self.service.read_document(self.scope, self.document_id, session_token=self.token)
         before_revisions = self.revisions(self.document_id)
 
         after = self.service.rename_node(
-            self.scope, self.document_id, "final", expected_version=before.version
+            self.scope, self.document_id, "final", expected_version=before.version,
+            session_token=self.token,
         )
 
         self.assertEqual(after.id, before.id)
@@ -128,7 +132,7 @@ class TestRenameNode(ContentMoveTestCase):
         self.assertEqual(self.revisions(self.document_id), before_revisions)
         # The returned NodeSnapshot intentionally carries no body; reading the
         # document by id proves the revision pointer and content are untouched.
-        read = self.service.read_document(self.scope, self.document_id)
+        read = self.service.read_document(self.scope, self.document_id, session_token=self.token)
         self.assertEqual(read.content, before.content)
         self.assertEqual(read.revision_id, before.revision_id)
 
@@ -138,7 +142,8 @@ class TestRenameNode(ContentMoveTestCase):
         counts = self.counts()
 
         self.service.rename_node(
-            self.scope, self.document_id, "renamed", expected_version=1
+            self.scope, self.document_id, "renamed", expected_version=1,
+            session_token=self.token,
         )
 
         after = self.entry(self.document_id)
@@ -153,37 +158,40 @@ class TestRenameNode(ContentMoveTestCase):
         self.assertEqual(self.counts(), counts)
 
     def test_rename_updates_paths_and_keeps_cwd_by_id(self):
-        before = self.service.get_node(self.scope, self.products_id)
+        before = self.service.get_node(self.scope, self.products_id, session_token=self.token)
         self.service.rename_node(
-            self.scope, self.products_id, "goods", expected_version=before.version
+            self.scope, self.products_id, "goods", expected_version=before.version,
+            session_token=self.token,
         )
 
-        self.assertEqual(self.service.get_path(self.scope, self.products_id), "/goods")
+        self.assertEqual(self.service.get_path(self.scope, self.products_id, session_token=self.token), "/goods")
         self.assertEqual(
-            self.service.resolve_path(self.scope, "goods").id, self.products_id
+            self.service.resolve_path(self.scope, "goods", session_token=self.token).id, self.products_id
         )
         with self.assertRaises(NotFound):
-            self.service.resolve_path(self.scope, "products")
+            self.service.resolve_path(self.scope, "products", session_token=self.token)
         # A session cwd stored as an object id keeps working after the rename.
         self.assertEqual(
             self.service.resolve_path(
-                self.scope, "concretecream", cwd_id=self.products_id
+                self.scope, "concretecream", cwd_id=self.products_id,
+                session_token=self.token,
             ).id,
             self.document_id,
         )
         self.assertEqual(
-            self.service.resolve_path(self.scope, ".", cwd_id=self.products_id).path,
+            self.service.resolve_path(self.scope, ".", cwd_id=self.products_id, session_token=self.token).path,
             "/goods",
         )
 
     def test_same_name_rename_is_a_true_noop(self):
-        before = self.service.get_node(self.scope, self.document_id)
+        before = self.service.get_node(self.scope, self.document_id, session_token=self.token)
         before_parent = self.entry(self.products_id)
         before_revisions = self.revisions(self.document_id)
         counts = self.counts()
 
         after = self.service.rename_node(
-            self.scope, self.document_id, before.name, expected_version=before.version
+            self.scope, self.document_id, before.name, expected_version=before.version,
+            session_token=self.token,
         )
 
         self.assertEqual(after, before)
@@ -192,7 +200,7 @@ class TestRenameNode(ContentMoveTestCase):
         self.assertEqual(self.counts(), counts)
 
     def test_stale_version_conflicts_even_for_same_name(self):
-        before = self.service.get_node(self.scope, self.document_id)
+        before = self.service.get_node(self.scope, self.document_id, session_token=self.token)
         before_entry = self.entry(self.document_id)
 
         with self.assertRaises(Conflict):
@@ -201,14 +209,16 @@ class TestRenameNode(ContentMoveTestCase):
                 self.document_id,
                 before.name,
                 expected_version=before.version + 1,
-            )
+               session_token=self.token,
+           )
         with self.assertRaises(Conflict):
             self.service.rename_node(
                 self.scope,
                 self.document_id,
                 "other",
                 expected_version=before.version + 1,
-            )
+               session_token=self.token,
+           )
 
         self.assertEqual(self.entry(self.document_id), before_entry)
 
@@ -219,7 +229,8 @@ class TestRenameNode(ContentMoveTestCase):
 
         with self.assertRaises(AlreadyExists):
             self.service.rename_node(
-                self.scope, self.document_id, "草稿 二", expected_version=1
+                self.scope, self.document_id, "草稿 二", expected_version=1,
+                session_token=self.token,
             )
 
         self.assertEqual(self.entry(self.document_id), before)
@@ -236,18 +247,20 @@ class TestRenameNode(ContentMoveTestCase):
         )
         before = {oid: self.entry(oid) for _, oid, _ in protected}
         for scope, object_id, _label in protected:
-            version = self.service.get_node(scope, object_id).version
+            version = self.service.get_node(scope, object_id, session_token=self.token).version
             with self.assertRaises(ProtectedNode):
                 self.service.rename_node(
-                    scope, object_id, "changed", expected_version=version
+                    scope, object_id, "changed", expected_version=version,
+                    session_token=self.token,
                 )
         for _, object_id, _label in protected:
             self.assertEqual(self.entry(object_id), before[object_id])
 
     def test_same_name_elsewhere_is_not_protected(self):
-        created = self.service.create_folder(self.scope, self.products_id, "main")
+        created = self.service.create_folder(self.scope, self.products_id, "main", session_token=self.token)
         renamed = self.service.rename_node(
-            self.scope, created.id, "admin", expected_version=created.version
+            self.scope, created.id, "admin", expected_version=created.version,
+            session_token=self.token,
         )
         self.assertEqual(renamed.name, "admin")
         self.assertEqual(renamed.id, created.id)
@@ -255,26 +268,29 @@ class TestRenameNode(ContentMoveTestCase):
     def test_rename_missing_and_deleted_are_not_found(self):
         counts = self.counts()
         with self.assertRaises(NotFound):
-            self.service.rename_node(self.scope, "missing", "x", expected_version=1)
+            self.service.rename_node(self.scope, "missing", "x", expected_version=1, session_token=self.token)
         with self.assertRaises(NotFound):
             self.service.rename_node(
-                self.scope, self.fixture.deleted_folder_id, "x", expected_version=1
+                self.scope, self.fixture.deleted_folder_id, "x", expected_version=1,
+                session_token=self.token,
             )
         self.assertEqual(self.counts(), counts)
 
     def test_rename_rejects_invalid_arguments(self):
         before = self.entry(self.document_id)
         with self.assertRaises(InvalidArgument):
-            self.service.rename_node(self.scope, 123, "x", expected_version=1)
+            self.service.rename_node(self.scope, 123, "x", expected_version=1, session_token=self.token)
         for bad_version in (True, 0, -1, "1", 1.0, None):
             with self.assertRaises(InvalidArgument):
                 self.service.rename_node(
-                    self.scope, self.document_id, "x", expected_version=bad_version
+                    self.scope, self.document_id, "x", expected_version=bad_version,
+                    session_token=self.token,
                 )
         for bad_name in ("", ".", "..", "a/b", "a\\b", "x\x00y", None, 123):
             with self.assertRaises(InvalidName):
                 self.service.rename_node(
-                    self.scope, self.document_id, bad_name, expected_version=1
+                    self.scope, self.document_id, bad_name, expected_version=1,
+                    session_token=self.token,
                 )
         self.assertEqual(self.entry(self.document_id), before)
 
@@ -284,7 +300,8 @@ class TestRenameNode(ContentMoveTestCase):
         with patch.object(Repository, "find_child", return_value=None):
             with self.assertRaises(AlreadyExists):
                 self.service.rename_node(
-                    self.scope, self.document_id, "草稿 二", expected_version=1
+                    self.scope, self.document_id, "草稿 二", expected_version=1,
+                    session_token=self.token,
                 )
         self.assertEqual(self.entry(self.document_id), before)
         self.assertEqual(self.counts(), counts)
@@ -302,7 +319,8 @@ class TestRenameNode(ContentMoveTestCase):
         with patch.object(Repository, "update_entry", side_effect=position_error):
             with self.assertRaises(ConstraintError) as caught:
                 self.service.rename_node(
-                    self.scope, self.document_id, "final", expected_version=1
+                    self.scope, self.document_id, "final", expected_version=1,
+                    session_token=self.token,
                 )
         self.assertNotIsInstance(caught.exception, AlreadyExists)
 
@@ -315,7 +333,8 @@ class TestRenameNode(ContentMoveTestCase):
         ):
             with self.assertRaises(RuntimeError):
                 self.service.rename_node(
-                    self.scope, self.document_id, "final", expected_version=1
+                    self.scope, self.document_id, "final", expected_version=1,
+                    session_token=self.token,
                 )
         self.assertEqual(self.entry(self.document_id), before)
         self.assertEqual(self.entry(self.products_id), before_parent)
@@ -324,7 +343,7 @@ class TestRenameNode(ContentMoveTestCase):
 
 class TestMoveNode(ContentMoveTestCase):
     def test_move_document_across_parents_appends_position(self):
-        before_doc = self.service.read_document(self.scope, self.document_id)
+        before_doc = self.service.read_document(self.scope, self.document_id, session_token=self.token)
         before_old_parent = self.entry(self.products_id)
         before_new_parent = self.entry(self.fixture.chinese_folder_id)
         before_revisions = self.revisions(self.document_id)
@@ -335,7 +354,8 @@ class TestMoveNode(ContentMoveTestCase):
             self.document_id,
             self.fixture.chinese_folder_id,
             expected_version=before_doc.version,
-        )
+           session_token=self.token,
+       )
 
         self.assertEqual(after.id, self.document_id)
         self.assertEqual(after.kind, "document")
@@ -344,7 +364,7 @@ class TestMoveNode(ContentMoveTestCase):
         self.assertEqual(after.version, before_doc.version + 1)
         self.assertEqual(after.path, "/中文 空格/concretecream")
         self.assertEqual(self.revisions(self.document_id), before_revisions)
-        read = self.service.read_document(self.scope, self.document_id)
+        read = self.service.read_document(self.scope, self.document_id, session_token=self.token)
         self.assertEqual(read.content, before_doc.content)
         self.assertEqual(read.revision_id, before_doc.revision_id)
         self.assertEqual(self.counts(), counts)
@@ -369,7 +389,8 @@ class TestMoveNode(ContentMoveTestCase):
             self.products_id,
             self.fixture.chinese_folder_id,
             expected_version=before_products.version,
-        )
+           session_token=self.token,
+       )
 
         self.assertEqual(after.id, self.products_id)
         self.assertEqual(after.parent_id, self.fixture.chinese_folder_id)
@@ -379,15 +400,15 @@ class TestMoveNode(ContentMoveTestCase):
         self.assertEqual(self.node(self.products_id).id, self.products_id)
         self.assertEqual(self.node(self.document_id).id, before_child.id)
         self.assertEqual(
-            self.service.get_path(self.scope, self.document_id),
+            self.service.get_path(self.scope, self.document_id, session_token=self.token),
             "/中文 空格/products/concretecream",
         )
         self.assertEqual(
-            self.service.get_path(self.scope, self.fixture.draft_id),
+            self.service.get_path(self.scope, self.fixture.draft_id, session_token=self.token),
             "/中文 空格/products/草稿 二",
         )
         self.assertEqual(
-            self.service.get_path(self.scope, self.fixture.notes_id),
+            self.service.get_path(self.scope, self.fixture.notes_id, session_token=self.token),
             "/中文 空格/笔记",
         )
         self.assertEqual(self.revisions(self.document_id), before_child_revisions)
@@ -401,7 +422,7 @@ class TestMoveNode(ContentMoveTestCase):
         self.assertEqual(new_parent["modified_at"], after.modified_at)
 
     def test_move_same_parent_with_new_name_is_a_rename(self):
-        before = self.service.get_node(self.scope, self.document_id)
+        before = self.service.get_node(self.scope, self.document_id, session_token=self.token)
         before_parent = self.entry(self.products_id)
         before_revisions = self.revisions(self.document_id)
 
@@ -411,7 +432,8 @@ class TestMoveNode(ContentMoveTestCase):
             self.products_id,
             expected_version=before.version,
             name="final",
-        )
+           session_token=self.token,
+       )
 
         self.assertEqual(after.id, self.document_id)
         self.assertEqual(after.parent_id, self.products_id)
@@ -426,17 +448,18 @@ class TestMoveNode(ContentMoveTestCase):
         self.assertEqual(parent["modified_at"], after.modified_at)
 
     def test_same_parent_same_name_move_is_noop(self):
-        before = self.service.get_node(self.scope, self.document_id)
+        before = self.service.get_node(self.scope, self.document_id, session_token=self.token)
         after = self.service.move_node(
             self.scope,
             before.id,
             before.parent_id,
             expected_version=before.version,
-        )
+           session_token=self.token,
+       )
         self.assertEqual(after, before)
 
     def test_same_parent_move_with_equal_name_is_noop(self):
-        before = self.service.get_node(self.scope, self.document_id)
+        before = self.service.get_node(self.scope, self.document_id, session_token=self.token)
         before_parent = self.entry(self.products_id)
         counts = self.counts()
 
@@ -446,14 +469,15 @@ class TestMoveNode(ContentMoveTestCase):
             self.products_id,
             expected_version=before.version,
             name=before.name,
-        )
+           session_token=self.token,
+       )
 
         self.assertEqual(after, before)
         self.assertEqual(self.entry(self.products_id), before_parent)
         self.assertEqual(self.counts(), counts)
 
     def test_move_stale_version_conflicts_even_for_noop(self):
-        before = self.service.get_node(self.scope, self.document_id)
+        before = self.service.get_node(self.scope, self.document_id, session_token=self.token)
         before_entry = self.entry(self.document_id)
 
         with self.assertRaises(Conflict):
@@ -462,33 +486,36 @@ class TestMoveNode(ContentMoveTestCase):
                 self.document_id,
                 before.parent_id,
                 expected_version=before.version + 1,
-            )
+               session_token=self.token,
+           )
 
         self.assertEqual(self.entry(self.document_id), before_entry)
 
     def test_move_does_not_bump_grandparent(self):
         before_root = self.entry(self.scope.root_id)
         before_workspace_root = self.entry(self.fixture.root_id)
-        before_doc = self.service.get_node(self.scope, self.document_id)
+        before_doc = self.service.get_node(self.scope, self.document_id, session_token=self.token)
 
         self.service.move_node(
             self.scope,
             self.document_id,
             self.fixture.chinese_folder_id,
             expected_version=before_doc.version,
-        )
+           session_token=self.token,
+       )
 
         self.assertEqual(self.entry(self.scope.root_id), before_root)
         self.assertEqual(self.entry(self.fixture.root_id), before_workspace_root)
 
     def test_move_one_operation_uses_single_utc_time(self):
-        before = self.service.get_node(self.scope, self.document_id)
+        before = self.service.get_node(self.scope, self.document_id, session_token=self.token)
         after = self.service.move_node(
             self.scope,
             self.document_id,
             self.fixture.chinese_folder_id,
             expected_version=before.version,
-        )
+           session_token=self.token,
+       )
 
         self.assertEqual(after.created_at, before.created_at)
         self.assertEqual(self.entry(self.products_id)["modified_at"], after.modified_at)
@@ -498,38 +525,42 @@ class TestMoveNode(ContentMoveTestCase):
         )
 
     def test_move_to_self_and_descendant_fails(self):
-        created = self.service.create_folder(self.scope, self.products_id, "sub")
-        before = self.service.get_node(self.scope, self.products_id)
+        created = self.service.create_folder(self.scope, self.products_id, "sub", session_token=self.token)
+        before = self.service.get_node(self.scope, self.products_id, session_token=self.token)
         before_entry = self.entry(self.products_id)
         before_created = self.entry(created.id)
 
         for target in (self.products_id, created.id):
             with self.assertRaises(InvalidMove):
                 self.service.move_node(
-                    self.scope, self.products_id, target, expected_version=before.version
+                    self.scope, self.products_id, target, expected_version=before.version,
+                    session_token=self.token,
                 )
 
         self.assertEqual(self.entry(self.products_id), before_entry)
         self.assertEqual(self.entry(created.id), before_created)
 
     def test_move_to_document_target_is_not_directory(self):
-        before = self.service.get_node(self.scope, self.document_id)
+        before = self.service.get_node(self.scope, self.document_id, session_token=self.token)
         with self.assertRaises(NotDirectory):
             self.service.move_node(
                 self.scope,
                 self.document_id,
                 self.fixture.draft_id,
                 expected_version=before.version,
-            )
+               session_token=self.token,
+           )
         with self.assertRaises(NotDirectory):
             self.service.move_node(
                 self.scope,
                 self.products_id,
                 self.document_id,
                 expected_version=self.service.get_node(
-                    self.scope, self.products_id
+                    self.scope, self.products_id,
+                    session_token=self.token,
                 ).version,
-            )
+               session_token=self.token,
+           )
 
     def test_move_to_existing_name_raises_already_exists(self):
         before = self.entry(self.document_id)
@@ -544,7 +575,8 @@ class TestMoveNode(ContentMoveTestCase):
                 self.fixture.chinese_folder_id,
                 expected_version=1,
                 name="笔记",
-            )
+               session_token=self.token,
+           )
 
         self.assertEqual(self.entry(self.document_id), before)
         self.assertEqual(self.entry(self.fixture.notes_id), before_target)
@@ -553,22 +585,24 @@ class TestMoveNode(ContentMoveTestCase):
 
     def test_move_outside_access_root_fails(self):
         products_scope = self.sibling_scope()
-        before = self.service.get_node(products_scope, self.document_id)
+        before = self.service.get_node(products_scope, self.document_id, session_token=self.token)
         before_entry = self.entry(self.document_id)
-        with self.assertRaises(PathOutsideRoot):
+        with self.assertRaises(NotFound):
             self.service.move_node(
                 products_scope,
                 self.document_id,
                 self.fixture.admin_id,
                 expected_version=before.version,
-            )
+               session_token=self.token,
+           )
         with self.assertRaises(NotFound):
             self.service.move_node(
                 self.scope,
                 self.document_id,
                 self.fixture.foreign_root_id,
                 expected_version=before.version,
-            )
+               session_token=self.token,
+           )
         self.assertEqual(self.entry(self.document_id), before_entry)
 
     def test_move_protected_objects_fail(self):
@@ -582,31 +616,36 @@ class TestMoveNode(ContentMoveTestCase):
                 self.scope.root_id,
                 self.fixture.admin_id,
                 expected_version=self.service.get_node(
-                    self.root_scope, self.scope.root_id
+                    self.root_scope, self.scope.root_id,
+                    session_token=self.token,
                 ).version,
-            )
+               session_token=self.token,
+           )
         with self.assertRaises(ProtectedNode):
             self.service.move_node(
                 self.root_scope,
                 self.fixture.admin_id,
                 self.products_id,
                 expected_version=self.service.get_node(
-                    self.root_scope, self.fixture.admin_id
+                    self.root_scope, self.fixture.admin_id,
+                    session_token=self.token,
                 ).version,
-            )
+               session_token=self.token,
+           )
 
         self.assertEqual(self.entry(self.scope.root_id), before_main)
         self.assertEqual(self.entry(self.fixture.admin_id), before_admin)
         self.assertEqual(self.entry(self.products_id), before_products)
 
     def test_move_same_name_elsewhere_is_not_protected(self):
-        created = self.service.create_folder(self.scope, self.products_id, "main")
+        created = self.service.create_folder(self.scope, self.products_id, "main", session_token=self.token)
         moved = self.service.move_node(
             self.scope,
             created.id,
             self.fixture.chinese_folder_id,
             expected_version=created.version,
-        )
+           session_token=self.token,
+       )
         self.assertEqual(moved.name, "main")
         self.assertEqual(moved.parent_id, self.fixture.chinese_folder_id)
         self.assertEqual(moved.id, created.id)
@@ -615,7 +654,8 @@ class TestMoveNode(ContentMoveTestCase):
         counts = self.counts()
         with self.assertRaises(NotFound):
             self.service.move_node(
-                self.scope, "missing", self.products_id, expected_version=1
+                self.scope, "missing", self.products_id, expected_version=1,
+                session_token=self.token,
             )
         with self.assertRaises(NotFound):
             self.service.move_node(
@@ -623,10 +663,12 @@ class TestMoveNode(ContentMoveTestCase):
                 self.fixture.deleted_folder_id,
                 self.products_id,
                 expected_version=1,
-            )
+               session_token=self.token,
+           )
         with self.assertRaises(NotFound):
             self.service.move_node(
-                self.scope, self.document_id, "missing", expected_version=1
+                self.scope, self.document_id, "missing", expected_version=1,
+                session_token=self.token,
             )
         with self.assertRaises(NotFound):
             self.service.move_node(
@@ -634,15 +676,16 @@ class TestMoveNode(ContentMoveTestCase):
                 self.document_id,
                 self.fixture.deleted_folder_id,
                 expected_version=1,
-            )
+               session_token=self.token,
+           )
         self.assertEqual(self.counts(), counts)
 
     def test_move_rejects_invalid_arguments(self):
         before = self.entry(self.document_id)
         with self.assertRaises(InvalidArgument):
-            self.service.move_node(self.scope, 123, self.products_id, expected_version=1)
+            self.service.move_node(self.scope, 123, self.products_id, expected_version=1, session_token=self.token)
         with self.assertRaises(InvalidArgument):
-            self.service.move_node(self.scope, self.document_id, 123, expected_version=1)
+            self.service.move_node(self.scope, self.document_id, 123, expected_version=1, session_token=self.token)
         for bad_version in (True, 0, -1, "1", 1.0, None):
             with self.assertRaises(InvalidArgument):
                 self.service.move_node(
@@ -650,7 +693,8 @@ class TestMoveNode(ContentMoveTestCase):
                     self.document_id,
                     self.products_id,
                     expected_version=bad_version,
-                )
+                   session_token=self.token,
+               )
         for bad_name in ("", ".", "..", "a/b", "a\\b", "x\x00y"):
             with self.assertRaises(InvalidName):
                 self.service.move_node(
@@ -659,7 +703,8 @@ class TestMoveNode(ContentMoveTestCase):
                     self.fixture.chinese_folder_id,
                     expected_version=1,
                     name=bad_name,
-                )
+                   session_token=self.token,
+               )
         self.assertEqual(self.entry(self.document_id), before)
 
     def test_move_name_race_maps_to_already_exists(self):
@@ -673,7 +718,8 @@ class TestMoveNode(ContentMoveTestCase):
                     self.fixture.chinese_folder_id,
                     expected_version=1,
                     name="笔记",
-                )
+                   session_token=self.token,
+               )
         self.assertEqual(self.entry(self.document_id), before)
         self.assertEqual(self.entry(self.fixture.chinese_folder_id), before_new_parent)
 
@@ -687,7 +733,8 @@ class TestMoveNode(ContentMoveTestCase):
                     self.document_id,
                     self.fixture.chinese_folder_id,
                     expected_version=1,
-                )
+                   session_token=self.token,
+               )
         self.assertNotIsInstance(caught.exception, AlreadyExists)
         self.assertEqual(self.entry(self.document_id), before)
         self.assertEqual(self.entry(self.fixture.chinese_folder_id), before_new_parent)
@@ -706,7 +753,8 @@ class TestMoveNode(ContentMoveTestCase):
                     self.document_id,
                     self.fixture.chinese_folder_id,
                     expected_version=1,
-                )
+                   session_token=self.token,
+               )
         self.assertEqual(self.entry(self.document_id), before_source)
         self.assertEqual(self.entry(self.products_id), before_old_parent)
         self.assertEqual(self.entry(self.fixture.chinese_folder_id), before_new_parent)
@@ -726,14 +774,15 @@ class TestMoveNode(ContentMoveTestCase):
                     self.document_id,
                     self.fixture.chinese_folder_id,
                     expected_version=1,
-                )
+                   session_token=self.token,
+               )
         self.assertEqual(self.entry(self.document_id), before_source)
         self.assertEqual(self.entry(self.products_id), before_old_parent)
         self.assertEqual(self.entry(self.fixture.chinese_folder_id), before_new_parent)
         self.assertEqual(self.counts(), counts)
 
     def test_move_keeps_document_revision_and_parent_identity(self):
-        before_revision = self.service.read_document(self.scope, self.document_id)
+        before_revision = self.service.read_document(self.scope, self.document_id, session_token=self.token)
         before = self.entry(self.document_id)
         self.service.move_node(
             self.scope,
@@ -741,12 +790,13 @@ class TestMoveNode(ContentMoveTestCase):
             self.fixture.chinese_folder_id,
             expected_version=1,
             name="moved",
-        )
+           session_token=self.token,
+       )
         after = self.entry(self.document_id)
         self.assertEqual(after["object_id"], before["object_id"])
         self.assertEqual(after["created_at"], before["created_at"])
         self.assertEqual(after["current_revision_id"], before["current_revision_id"])
-        read = self.service.read_document(self.scope, self.document_id)
+        read = self.service.read_document(self.scope, self.document_id, session_token=self.token)
         self.assertEqual(read.content, before_revision.content)
         self.assertEqual(read.revision_id, before_revision.revision_id)
         self.assertEqual(read.path, "/中文 空格/moved")
@@ -758,11 +808,11 @@ if __name__ == "__main__":
 
 class TestProtectedNoops(ContentMoveTestCase):
     def test_protected_same_name_rename_and_move_reject(self):
-        main = self.service.get_node(self.root_scope, self.fixture.main_id)
+        main = self.service.get_node(self.root_scope, self.fixture.main_id, session_token=self.token)
         with self.assertRaises(ProtectedNode):
             self.service.rename_node(self.root_scope, main.id, main.name,
-                                     expected_version=main.version)
+                                     expected_version=main.version, session_token=self.token)
         with self.assertRaises(ProtectedNode):
             self.service.move_node(self.root_scope, main.id, main.parent_id,
-                                   expected_version=main.version, name=main.name)
-        self.assertEqual(self.service.get_node(self.root_scope, main.id), main)
+                                   expected_version=main.version, name=main.name, session_token=self.token)
+        self.assertEqual(self.service.get_node(self.root_scope, main.id, session_token=self.token), main)

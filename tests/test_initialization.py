@@ -19,7 +19,7 @@ from src.storage.repository import (
     insert_workspace,
     lookup_default_main,
 )
-from tests.helpers import FIXTURE_TIME, TempPathTestCase
+from tests.helpers import FIXTURE_TIME, TempPathTestCase, seed_test_actors
 
 _ENTRY_DUMP = (
     "SELECT workspace_id, branch_id, object_id, parent_id, name, position, version, "
@@ -68,7 +68,7 @@ class TestInitializeDatabase(TempPathTestCase):
         self.assertTrue(path.exists())
         self.assertIsInstance(scope, ContentScope)
         with Database(path).management_connection() as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 1)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 2)
             self.assertEqual(
                 str(connection.execute("PRAGMA journal_mode").fetchone()[0]).lower(),
                 "wal",
@@ -162,7 +162,9 @@ class TestInitializeDatabase(TempPathTestCase):
         root_scope = initialize_database(path)
         service = ContentService(Database(path))
 
-        cli_scope = service.default_scope()
+        self.assertFalse(service.bootstrap(session_token=None).initialized)
+        token = seed_test_actors(Database(path), root_scope.workspace_id)['owner'].session_token
+        cli_scope = service.default_scope(session_token=token)
 
         self.assertIsInstance(cli_scope, ContentScope)
         self.assertEqual(cli_scope.workspace_id, root_scope.workspace_id)
@@ -175,9 +177,9 @@ class TestInitializeDatabase(TempPathTestCase):
                 (root_scope.root_id,),
             ).fetchone()
         self.assertEqual(cli_scope.root_id, main["object_id"])
-        self.assertEqual(service.get_path(cli_scope, cli_scope.root_id), "/")
-        self.assertEqual(service.get_path(root_scope, cli_scope.root_id), "/main")
-        resolved = service.resolve_path(cli_scope, "~")
+        self.assertEqual(service.get_path(cli_scope, cli_scope.root_id, session_token=token), "/")
+        self.assertEqual(service.get_path(root_scope, cli_scope.root_id, session_token=token), "/main")
+        resolved = service.resolve_path(cli_scope, "~", session_token=token)
         self.assertEqual(resolved.id, cli_scope.root_id)
         self.assertEqual(resolved.path, "/")
 

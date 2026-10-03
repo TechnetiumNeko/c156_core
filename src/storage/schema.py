@@ -1,4 +1,4 @@
-"""Unified content database schema (protocol version 1).
+"""Unified content database schema (protocol version 2).
 
 ``create_schema`` receives a management connection and never commits: the
 management transaction that creates the tables and sets ``user_version`` must
@@ -19,7 +19,7 @@ import sqlite3
 
 __all__ = ["SCHEMA_VERSION", "create_schema"]
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _TABLE_STATEMENTS = (
     """
@@ -178,11 +178,176 @@ _TRIGGER_STATEMENTS = (
     """,
 )
 
-_SCHEMA_STATEMENTS = _TABLE_STATEMENTS + _INDEX_STATEMENTS + _TRIGGER_STATEMENTS
+_IDENTITY_STATEMENTS = (
+    """
+    CREATE TABLE users (
+        id TEXT PRIMARY KEY NOT NULL,
+        login_name TEXT UNIQUE NOT NULL,
+        display_name TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('invited','active','reset_required','disabled')),
+        site_admin INTEGER NOT NULL CHECK(typeof(site_admin)='integer' AND site_admin IN (0,1)),
+        version INTEGER NOT NULL CHECK(typeof(version)='integer' AND version>=1),
+        credential_version INTEGER NOT NULL CHECK(typeof(credential_version)='integer' AND credential_version>=1),
+        created_at TEXT NOT NULL,
+        modified_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE password_credentials (
+        user_id TEXT PRIMARY KEY NOT NULL REFERENCES users(id),
+        password_hash TEXT NOT NULL,
+        credential_version INTEGER NOT NULL CHECK(typeof(credential_version)='integer' AND credential_version>=1),
+        updated_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE account_tokens (
+        token_digest TEXT PRIMARY KEY NOT NULL,
+        user_id TEXT NOT NULL REFERENCES users(id),
+        purpose TEXT NOT NULL CHECK(purpose IN ('activate','reset')),
+        credential_version INTEGER NOT NULL CHECK(typeof(credential_version)='integer' AND credential_version>=1),
+        issued_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        consumed_at TEXT,
+        revoked_at TEXT
+    )
+    """,
+    """
+    CREATE TABLE sessions (
+        token_digest TEXT PRIMARY KEY NOT NULL,
+        user_id TEXT NOT NULL REFERENCES users(id),
+        credential_version INTEGER NOT NULL CHECK(typeof(credential_version)='integer' AND credential_version>=1),
+        csrf_token TEXT NOT NULL,
+        issued_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        revoked_at TEXT
+    )
+    """,
+    """
+    CREATE TABLE workspace_memberships (
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+        user_id TEXT NOT NULL REFERENCES users(id),
+        role TEXT NOT NULL CHECK(role IN ('reader','editor','admin','owner')),
+        status TEXT NOT NULL CHECK(status IN ('active','removed')),
+        version INTEGER NOT NULL CHECK(typeof(version)='integer' AND version>=1),
+        created_at TEXT NOT NULL,
+        modified_at TEXT NOT NULL,
+        PRIMARY KEY(workspace_id,user_id)
+    )
+    """,
+    """
+    CREATE TABLE workspace_access_settings (
+        workspace_id TEXT PRIMARY KEY NOT NULL REFERENCES workspaces(id),
+        read_scope TEXT NOT NULL DEFAULT 'members' CHECK(read_scope IN ('members','authenticated','everyone')),
+        version INTEGER NOT NULL DEFAULT 1 CHECK(typeof(version)='integer' AND version>=1)
+    )
+    """,
+    """
+    CREATE TABLE access_rules (
+        workspace_id TEXT NOT NULL,
+        branch_id TEXT NOT NULL,
+        object_id TEXT NOT NULL,
+        subject_type TEXT NOT NULL CHECK(subject_type IN ('user','role','authenticated','everyone')),
+        subject_key TEXT NOT NULL,
+        subject_user_id TEXT,
+        action TEXT NOT NULL CHECK(action IN ('read','edit','create','rename','move','delete','review','publish')),
+        effect TEXT NOT NULL CHECK(effect IN ('allow','deny')),
+        PRIMARY KEY(workspace_id,branch_id,object_id,subject_type,subject_key,action),
+        FOREIGN KEY(workspace_id,branch_id,object_id) REFERENCES entries(workspace_id,branch_id,object_id),
+        FOREIGN KEY(workspace_id,subject_user_id) REFERENCES workspace_memberships(workspace_id,user_id),
+        CHECK((subject_type='user' AND subject_user_id IS NOT NULL AND subject_user_id=subject_key) OR (subject_type='role' AND subject_user_id IS NULL AND subject_key IN ('reader','editor','admin','owner')) OR (subject_type IN ('authenticated','everyone') AND subject_user_id IS NULL AND subject_key='' AND action='read'))
+    )
+    """,
+    """
+    CREATE TABLE content_ownership (
+        workspace_id TEXT NOT NULL,
+        object_id TEXT NOT NULL,
+        creator_id TEXT REFERENCES users(id),
+        PRIMARY KEY(workspace_id,object_id),
+        FOREIGN KEY(workspace_id,object_id) REFERENCES objects(workspace_id,id)
+    )
+    """,
+    """
+    CREATE TABLE content_privacy (
+        workspace_id TEXT NOT NULL,
+        branch_id TEXT NOT NULL,
+        object_id TEXT NOT NULL,
+        owner_id TEXT NOT NULL REFERENCES users(id),
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(workspace_id,branch_id,object_id),
+        FOREIGN KEY(workspace_id,branch_id,object_id) REFERENCES entries(workspace_id,branch_id,object_id)
+    )
+    """,
+    """
+    CREATE TABLE content_locks (
+        workspace_id TEXT NOT NULL,
+        branch_id TEXT NOT NULL,
+        object_id TEXT NOT NULL,
+        locked_by TEXT NOT NULL REFERENCES users(id),
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(workspace_id,branch_id,object_id),
+        FOREIGN KEY(workspace_id,branch_id,object_id) REFERENCES entries(workspace_id,branch_id,object_id)
+    )
+    """,
+    """
+    CREATE TABLE audit_events (
+        id TEXT PRIMARY KEY NOT NULL,
+        actor_id TEXT REFERENCES users(id),
+        workspace_id TEXT REFERENCES workspaces(id),
+        event_type TEXT NOT NULL,
+        target_type TEXT NOT NULL,
+        target_id TEXT NOT NULL,
+        before_json TEXT,
+        after_json TEXT,
+        created_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE auth_throttles (
+        bucket_type TEXT NOT NULL CHECK(bucket_type IN ('login','token','source','password')),
+        bucket_key TEXT NOT NULL,
+        window_started_at TEXT NOT NULL,
+        attempts INTEGER NOT NULL CHECK(typeof(attempts)='integer' AND attempts>=1),
+        PRIMARY KEY(bucket_type,bucket_key)
+    )
+    """,
+    """
+    CREATE INDEX idx_account_tokens_user_purpose ON account_tokens(user_id,purpose)
+    """,
+    """
+    CREATE INDEX idx_sessions_user ON sessions(user_id)
+    """,
+    """
+    CREATE INDEX idx_auth_throttles_window ON auth_throttles(window_started_at)
+    """,
+    """
+    CREATE TRIGGER trg_audit_events_no_update BEFORE UPDATE ON audit_events BEGIN SELECT RAISE(ABORT, 'audit_events are immutable'); END
+    """,
+    """
+    CREATE TRIGGER trg_audit_events_no_delete BEFORE DELETE ON audit_events BEGIN SELECT RAISE(ABORT, 'audit_events are immutable'); END
+    """,
+    """
+    CREATE TRIGGER trg_content_ownership_no_update BEFORE UPDATE ON content_ownership BEGIN SELECT RAISE(ABORT, 'content_ownership are immutable'); END
+    """,
+    """
+    CREATE TRIGGER trg_content_ownership_no_delete BEFORE DELETE ON content_ownership BEGIN SELECT RAISE(ABORT, 'content_ownership are immutable'); END
+    """,
+    """
+    CREATE TRIGGER trg_users_identity_immutable BEFORE UPDATE ON users WHEN NEW.id<>OLD.id OR NEW.login_name<>OLD.login_name BEGIN SELECT RAISE(ABORT, 'users identity is immutable'); END
+    """,
+    """
+    CREATE TRIGGER trg_content_locks_document_insert BEFORE INSERT ON content_locks WHEN COALESCE((SELECT kind FROM objects WHERE workspace_id=NEW.workspace_id AND id=NEW.object_id),'')<>'document' BEGIN SELECT RAISE(ABORT, 'only documents may be locked'); END
+    """,
+    """
+    CREATE TRIGGER trg_content_locks_document_update BEFORE UPDATE ON content_locks WHEN COALESCE((SELECT kind FROM objects WHERE workspace_id=NEW.workspace_id AND id=NEW.object_id),'')<>'document' BEGIN SELECT RAISE(ABORT, 'only documents may be locked'); END
+    """,
+)
+
+_SCHEMA_STATEMENTS = _TABLE_STATEMENTS + _INDEX_STATEMENTS + _TRIGGER_STATEMENTS + _IDENTITY_STATEMENTS
 
 
 def create_schema(connection: sqlite3.Connection) -> None:
-    """Create protocol version 1 tables in *connection* without committing."""
+    """Create protocol version 2 tables in *connection* without committing."""
 
     for statement in _SCHEMA_STATEMENTS:
         connection.execute(statement)

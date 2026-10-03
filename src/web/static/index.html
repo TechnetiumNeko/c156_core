@@ -24,6 +24,10 @@
         </div>
         <p id="active-folder" class="muted"></p>
         <nav id="tree" aria-label="文档目录"></nav>
+        <details open><summary>账号</summary><section id="account-panel"></section></details>
+        <button id="manage-access" hidden>成员与对象权限</button>
+        <button id="manage-folder-access" hidden>当前目录权限</button>
+        <section id="access-panel" hidden></section>
         <p class="memory-note">草稿仅保留在当前页面中。关闭前请保存。</p>
       </aside>
       <main>
@@ -39,6 +43,8 @@
           <button data-mode="split" aria-pressed="true">并排</button>
           <button data-mode="preview">预览</button>
         </div>
+        <section id="identity-gate" hidden><p>已认证其他账号。旧草稿仍受保护，放弃后才能进入。</p><button id="discard-identity">放弃旧草稿并进入</button><button id="logout-pending">退出新账号</button></section>
+        <div class="mode-bar"><span id="access-status"></span><button id="freeze" hidden>冻结</button><button id="unfreeze" hidden>解除冻结</button><button id="discard-draft" hidden>放弃当前草稿</button></div>
         <p id="error" role="alert" hidden></p>
         <!-- 冲突处理与旧草稿对照 -->
         <section id="conflict" hidden>
@@ -85,6 +91,7 @@
         <p id="create-location"></p>
         <label for="name">名称</label>
         <input id="name" name="name" autocomplete="off" required />
+        <label>可见范围<select id="create-visibility"><option value="inherit">继承</option><option value="private">私密</option></select></label><p id="create-hint" class="muted"></p>
         <p id="create-error" role="alert"></p>
         <div class="dialog-actions">
           <button type="button" id="create-cancel">取消</button>

@@ -11,6 +11,7 @@ from typing import Any, Mapping
 
 __all__ = [
     "ContentError",
+    "Unauthenticated", "Forbidden", "RateLimited", "Frozen",
     "NotFound",
     "AlreadyExists",
     "NotDirectory",
@@ -124,3 +125,19 @@ class MigrationError(ContentError):
     """Legacy data could not be scanned, validated or imported."""
 
     code = "migration_error"
+
+
+class Unauthenticated(ContentError):
+    code = "unauthenticated"
+
+
+class Forbidden(ContentError):
+    code = "forbidden"
+
+
+class RateLimited(ContentError):
+    code = "rate_limited"
+
+
+class Frozen(ContentError):
+    code = "frozen"

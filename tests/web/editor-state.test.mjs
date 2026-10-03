@@ -9,6 +9,7 @@ const doc = (content = 'original', revision_id = 'r1', id = 'a') => ({
 });
 test('CRLF unchanged representation remains clean', () => {
   const s = new EditorState();
+  s.setIdentity('alice');
   s.open(doc('a\r\nb'));
   assert.equal(s.draft, 'a\nb');
   s.edit('a\nb');
@@ -17,6 +18,7 @@ test('CRLF unchanged representation remains clean', () => {
 });
 test('typing while saving is retained and confirmed base advances', () => {
   const s = new EditorState();
+  s.setIdentity('alice');
   s.open(doc());
   s.edit('first');
   const p = s.beginSave();
@@ -29,6 +31,7 @@ test('typing while saving is retained and confirmed base advances', () => {
 });
 test('failed save keeps exact original revision and draft', () => {
   const s = new EditorState();
+  s.setIdentity('alice');
   s.open(doc());
   s.edit('mine');
   const p = s.beginSave();
@@ -40,6 +43,7 @@ test('failed save keeps exact original revision and draft', () => {
 });
 test('stale document loads cannot replace newer selection', () => {
   const s = new EditorState();
+  s.setIdentity('alice');
   const a = s.beginLoad();
   const b = s.beginLoad();
   assert.equal(s.finishLoad(a, doc()), false);
@@ -48,6 +52,7 @@ test('stale document loads cannot replace newer selection', () => {
 });
 test('manual merge starts from latest and retains old draft independently', () => {
   const s = new EditorState();
+  s.setIdentity('alice');
   s.open(doc());
   s.edit('mine');
   s.setLatest(doc('theirs', 'r2'));
@@ -62,6 +67,7 @@ test('manual merge starts from latest and retains old draft independently', () =
 });
 test('late save cannot update another document', () => {
   const s = new EditorState();
+  s.setIdentity('alice');
   s.open(doc());
   s.edit('mine');
   const p = s.beginSave();
@@ -71,6 +77,7 @@ test('late save cannot update another document', () => {
 });
 test('unload warns during saving even after reverting to initial text', () => {
   const s = new EditorState();
+  s.setIdentity('alice');
   s.open(doc());
   s.edit('pending');
   const ticket = s.beginSave();
@@ -83,6 +90,7 @@ test('unload warns during saving even after reverting to initial text', () => {
 });
 test('retained merge draft stays protected until merged text is saved', () => {
   const s = new EditorState();
+  s.setIdentity('alice');
   s.open(doc());
   s.edit('mine');
   s.setLatest(doc('theirs', 'r2'));
@@ -96,4 +104,74 @@ test('retained merge draft stays protected until merged text is saved', () => {
   assert.equal(s.comparisonDraft, null);
   assert.equal(s.hasUnsavedWork, false);
   assert.equal(s.shouldWarnBeforeUnload, false);
+});
+test('session loss invalidates load/save/latest while same account retains exact draft base', () => {
+  const s = new EditorState();
+  s.setIdentity('alice'); s.setIdentity('alice'); s.open(doc('a\r\nb'));
+  s.edit('mine'); const save=s.beginSave(); const load=s.beginLoad(); const epoch=s.epoch;
+  s.setIdentity(null);
+  assert.equal(s.saveSucceeded(save,doc('mine','r2')),false);
+  assert.equal(s.finishLoad(load,doc('replacement')),false);
+  assert.equal(s.setLatest(doc('latest','r3'),epoch),false);
+  assert.equal(s.beginSave(),null);
+  s.setIdentity('alice');
+  assert.equal(s.original,'a\r\nb'); assert.equal(s.revision,'r1');assert.equal(s.draft,'mine');
+  assert.equal(s.beginSave().expected_revision_id,'r1');
+});
+test('another account requires explicit discard and uncertain save remains protected', () => {
+  const s=new EditorState();s.setIdentity('alice');s.open(doc());s.edit('sent');const pending=s.beginSave();s.edit('original');
+  s.setIdentity(null);assert.equal(s.shouldWarnBeforeUnload,true);
+  assert.equal(s.setIdentity('bob'),false);assert.equal(s.identity,null);assert.equal(s.owner,'alice');
+  assert.equal(s.saveSucceeded(pending,doc('sent','r2')),false);
+  s.setIdentity('alice');const recheck=s.beginSave();assert.equal(recheck.content,'original');
+  s.saveSucceeded(recheck,doc('original','r3'));assert.equal(s.shouldWarnBeforeUnload,false);
+  s.edit('mine');assert.equal(s.setIdentity('bob',{discard:true}),true);assert.equal(s.document,null);assert.equal(s.draft,'');
+});
+test('access tickets bind document selection and latest permission request, including A to B to A', () => {
+  const s = new EditorState(); s.setIdentity('alice'); s.open(doc());
+  const delayedRefresh = s.beginAccess();
+  const pendingSelection = s.beginLoad();
+  assert.equal(s.isAccessCurrent(delayedRefresh), false);
+  s.finishLoad(pendingSelection, doc('b', 'rb', 'b'));
+  const delayedFreeze = s.beginAccess();
+  s.finishLoad(s.beginLoad(), doc());
+  assert.equal(s.isAccessCurrent(delayedRefresh), false);
+  assert.equal(s.isAccessCurrent(delayedFreeze), false);
+  const superseded = s.beginAccess();
+  const current = s.beginAccess();
+  assert.equal(s.isAccessCurrent(superseded), false);
+  assert.equal(s.isAccessCurrent(current), true);
+  s.setIdentity(null);
+  assert.equal(s.isAccessCurrent(current), false);
+});
+test('save acknowledgement controls capability side effects after discard and readonly selection', () => {
+  const s = new EditorState(); s.setIdentity('alice'); s.open(doc()); s.edit('submitted');
+  const old = s.beginSave();
+  s.setIdentity('alice', {discard:true}); s.open(doc('readonly', 'rb', 'b'));
+  let access = {actions:['read']};
+  const editable = {actions:['read','edit']};
+  assert.equal(s.saveSucceeded(old, doc('submitted','r2'), () => {access=editable;}), false);
+  assert.deepEqual(access, {actions:['read']});
+  assert.equal(s.saveFailed(old, 'conflict'), false);
+  assert.equal(s.conflict, false); assert.equal(s.document.id, 'b');
+  s.edit('valid'); const valid=s.beginSave();
+  assert.equal(s.saveSucceeded(valid,doc('valid','rb2','b'),()=>{access=editable;}),true);
+  assert.deepEqual(access,editable); assert.equal(s.revision,'rb2');
+});
+test('latest acceptance and merge keep reopened bases safe and reject superseded requests', () => {
+  const s=new EditorState();s.setIdentity('alice');s.open(doc());s.edit('mine');
+  const old=s.beginLatest();
+  s.setIdentity('alice',{discard:true});s.open(doc('reopened','a2'));s.edit('new draft');
+  assert.equal(s.setLatest(doc('old','a1'),old.epoch,old),false);
+  assert.equal(s.startMerge(old),false);
+  assert.equal(s.revision,'a2');assert.equal(s.draft,'new draft');assert.equal(s.latest,null);
+  const first=s.beginLatest();const latest=s.beginLatest();
+  assert.equal(s.setLatest(doc('superseded','a3'),first.epoch,first),false);
+  assert.equal(s.setLatest(doc('current','a4'),latest.epoch,latest),true);
+  assert.equal(s.startMerge(first),false);assert.equal(s.revision,'a2');
+  assert.equal(s.startMerge(latest),true);assert.equal(s.revision,'a4');
+  assert.equal(s.draft,'current');assert.equal(s.comparisonDraft,'new draft');
+  const beforeSelection=s.beginLatest();s.finishLoad(s.beginLoad(),doc('b','b1','b'));s.finishLoad(s.beginLoad(),doc('a again','a5'));
+  assert.equal(s.setLatest(doc('stale','a4'),beforeSelection.epoch,beforeSelection),false);
+  assert.equal(s.startMerge(beforeSelection),false);assert.equal(s.revision,'a5');
 });

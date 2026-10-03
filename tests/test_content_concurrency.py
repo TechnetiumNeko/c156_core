@@ -20,6 +20,7 @@ from tests.helpers import (
     TempPathTestCase,
     entry_state,
     seed_content_read_fixture,
+    seed_test_actors,
     table_counts,
 )
 
@@ -28,13 +29,13 @@ _QUEUE_TIMEOUT = 30.0
 _JOIN_TIMEOUT = 30.0
 
 
-def _create_worker(database_path, scope, parent_id, name, barrier, results):
+def _create_worker(database_path, scope, parent_id, name, token, barrier, results):
     """Try to create one same-named document after the shared start barrier."""
 
     service = ContentService(Database(Path(database_path)))
     try:
         barrier.wait(timeout=_BARRIER_TIMEOUT)
-        node = service.create_document(scope, parent_id, name, content="")
+        node = service.create_document(scope, parent_id, name, content="", session_token=token)
     except AlreadyExists:
         results.put({"status": "already_exists"})
     except ContentError as exc:
@@ -45,19 +46,20 @@ def _create_worker(database_path, scope, parent_id, name, barrier, results):
         results.put({"status": "ok", "id": node.id})
 
 
-def _save_worker(database_path, scope, object_id, content, barrier, results):
+def _save_worker(database_path, scope, object_id, content, token, barrier, results):
     """Read the current revision, synchronize, then save based on it."""
 
     service = ContentService(Database(Path(database_path)))
     try:
-        base = service.read_document(scope, object_id)
+        base = service.read_document(scope, object_id, session_token=token)
     except BaseException as exc:  # pragma: no cover - unexpected worker failure
         results.put({"status": "read_error", "detail": repr(exc)})
         return
     try:
         barrier.wait(timeout=_BARRIER_TIMEOUT)
         saved = service.save_document(
-            scope, object_id, content, expected_revision_id=base.revision_id
+            scope, object_id, content, expected_revision_id=base.revision_id,
+            session_token=token,
         )
     except Conflict:
         results.put({"status": "conflict", "base": base.revision_id})
@@ -85,6 +87,7 @@ class ContentConcurrencyTestCase(TempPathTestCase):
     def setUp(self) -> None:
         super().setUp()
         self.fixture = seed_content_read_fixture(self.temp_path())
+        self.token = seed_test_actors(self.fixture.database, self.fixture.workspace_id)["owner"].session_token
         self.scope = self.fixture.main_scope
         self.context = multiprocessing.get_context("spawn")
 
@@ -95,7 +98,7 @@ class ContentConcurrencyTestCase(TempPathTestCase):
         results = self.context.Queue()
         processes = [
             self.context.Process(
-                target=target, args=(*argument, barrier, results)
+                target=target, args=(*argument, self.token, barrier, results)
             )
             for argument in arguments
         ]
@@ -146,7 +149,7 @@ class TestConcurrentCreate(ContentConcurrencyTestCase):
         service = ContentService(self.fixture.database)
         matches = [
             child
-            for child in service.list_children(self.scope, self.fixture.products_id)
+            for child in service.list_children(self.scope, self.fixture.products_id, session_token=self.token)
             if child.name == "并发"
         ]
         self.assertEqual(len(matches), 1)
@@ -161,7 +164,8 @@ class TestConcurrentSave(ContentConcurrencyTestCase):
     def test_same_revision_save_has_one_winner(self):
         document_id = self.fixture.concretecream_id
         base_document = ContentService(self.fixture.database).read_document(
-            self.scope, document_id
+            self.scope, document_id,
+            session_token=self.token,
         )
         self.assertEqual(
             base_document.revision_id, self.fixture.concretecream_revision_id
@@ -191,7 +195,8 @@ class TestConcurrentSave(ContentConcurrencyTestCase):
         )
 
         final = ContentService(self.fixture.database).read_document(
-            self.scope, document_id
+            self.scope, document_id,
+            session_token=self.token,
         )
         self.assertEqual(final.revision_id, winner["new"])
         self.assertIn(final.content, ("甲", "乙"))
@@ -202,7 +207,8 @@ class TestConcurrentDeleteSnapshot(ContentConcurrencyTestCase):
 
     def test_deep_save_from_another_process_invalidates_delete_token(self):
         snapshot = ContentService(self.fixture.database).prepare_delete(
-            self.scope, self.fixture.products_id
+            self.scope, self.fixture.products_id,
+            session_token=self.token,
         )
 
         results = self.run_workers(
@@ -226,7 +232,8 @@ class TestConcurrentDeleteSnapshot(ContentConcurrencyTestCase):
                 expected_version=snapshot.version,
                 recursive=True,
                 expected_subtree_token=snapshot.subtree_token,
-            )
+               session_token=self.token,
+           )
 
         # The concurrent content survives and no extra row was deleted.
         after = table_counts(self.fixture.path)
@@ -235,7 +242,8 @@ class TestConcurrentDeleteSnapshot(ContentConcurrencyTestCase):
             entry_state(self.fixture.path, self.fixture.products_id)["deleted_at"]
         )
         final = ContentService(self.fixture.database).read_document(
-            self.scope, self.fixture.concretecream_id
+            self.scope, self.fixture.concretecream_id,
+            session_token=self.token,
         )
         self.assertEqual(final.content, "并发修改")
 
@@ -256,40 +264,40 @@ class TestSaveAfterMoveOrDelete(ContentConcurrencyTestCase):
             lock.execute("BEGIN IMMEDIATE")
             service = ContentService(Database(self.fixture.path, busy_timeout_ms=10))
             with self.assertRaises(StorageBusy):
-                service.create_folder(self.scope, self.scope.root_id, "blocked")
+                service.create_folder(self.scope, self.scope.root_id, "blocked", session_token=self.token)
         finally:
             lock.close()
         self.assertFalse(any(row.name == "blocked" for row in
-                             ContentService(self.fixture.database).list_children(self.scope, self.scope.root_id)))
+                             ContentService(self.fixture.database).list_children(self.scope, self.scope.root_id, session_token=self.token)))
 
     def test_save_after_move_in_scope_keeps_base_revision(self):
         service = ContentService(self.fixture.database)
         other = ContentService(Database(self.fixture.path))
-        doc = service.read_document(self.scope, self.fixture.concretecream_id)
-        other.move_node(self.scope, doc.id, self.scope.root_id, expected_version=doc.version)
+        doc = service.read_document(self.scope, self.fixture.concretecream_id, session_token=self.token)
+        other.move_node(self.scope, doc.id, self.scope.root_id, expected_version=doc.version, session_token=self.token)
         saved = service.save_document(self.scope, doc.id, "moved buffer",
-                                      expected_revision_id=doc.revision_id)
+                                      expected_revision_id=doc.revision_id, session_token=self.token)
         self.assertEqual(saved.content, "moved buffer")
 
     def test_save_after_move_outside_scope_fails_without_new_revision(self):
-        from src.core import PathOutsideRoot
+        from src.core import NotFound
         from tests.helpers import revision_state
         service = ContentService(self.fixture.database)
-        doc = service.read_document(self.scope, self.fixture.concretecream_id)
+        doc = service.read_document(self.scope, self.fixture.concretecream_id, session_token=self.token)
         ContentService(Database(self.fixture.path)).move_node(
-            self.fixture.root_scope, doc.id, self.fixture.admin_id, expected_version=doc.version)
+            self.fixture.root_scope, doc.id, self.fixture.admin_id, expected_version=doc.version, session_token=self.token)
         before = revision_state(self.fixture.path, doc.id)
-        with self.assertRaises(PathOutsideRoot):
-            service.save_document(self.scope, doc.id, "old buffer", expected_revision_id=doc.revision_id)
+        with self.assertRaises(NotFound):
+            service.save_document(self.scope, doc.id, "old buffer", expected_revision_id=doc.revision_id, session_token=self.token)
         self.assertEqual(revision_state(self.fixture.path, doc.id), before)
 
     def test_save_after_delete_fails_without_new_revision(self):
         from src.core import NotFound
         from tests.helpers import revision_state
         service = ContentService(self.fixture.database)
-        doc = service.read_document(self.scope, self.fixture.concretecream_id)
-        ContentService(Database(self.fixture.path)).delete_node(self.scope, doc.id, expected_version=doc.version)
+        doc = service.read_document(self.scope, self.fixture.concretecream_id, session_token=self.token)
+        ContentService(Database(self.fixture.path)).delete_node(self.scope, doc.id, expected_version=doc.version, session_token=self.token)
         before = revision_state(self.fixture.path, doc.id)
         with self.assertRaises(NotFound):
-            service.save_document(self.scope, doc.id, "old buffer", expected_revision_id=doc.revision_id)
+            service.save_document(self.scope, doc.id, "old buffer", expected_revision_id=doc.revision_id, session_token=self.token)
         self.assertEqual(revision_state(self.fixture.path, doc.id), before)

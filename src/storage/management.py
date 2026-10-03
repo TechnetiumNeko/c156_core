@@ -124,6 +124,8 @@ def _create_default_tree(path: Path) -> ContentScope:
                         deleted_at=None,
                     )
                 )
+            connection.execute("INSERT INTO workspace_access_settings(workspace_id) VALUES (?)", (workspace_id,))
+            connection.execute("INSERT INTO content_ownership(workspace_id,object_id,creator_id) SELECT workspace_id,id,NULL FROM objects WHERE workspace_id=?", (workspace_id,))
             connection.execute("COMMIT")
         except BaseException:
             if connection.in_transaction:
@@ -141,7 +143,7 @@ def _validate_existing(path: Path) -> ContentScope:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
             if version != SCHEMA_VERSION:
                 raise UnsupportedSchema(
-                    "unsupported database protocol version",
+                    "unsupported database protocol version; initialize at a new path",
                     details={
                         "expected": SCHEMA_VERSION,
                         "actual": version,

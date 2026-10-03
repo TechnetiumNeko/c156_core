@@ -139,5 +139,33 @@ class StorageCommandTests(TempPathTestCase):
         self.assertTrue(path.exists())
 
 
+class IdentityCommandTests(TempPathTestCase):
+    def test_bootstrap_password_confirmation_and_existing_initialized_database(self):
+        from src.identity.__main__ import main as identity_main
+        from src.storage.management import initialize_database
+        path = self.temp_path()
+        initialize_database(path)
+        arguments = ['bootstrap-admin', '--database', str(path), '--login-name', 'admin', '--display-name', 'Admin']
+        with mock.patch('src.identity.__main__.getpass.getpass', side_effect=['a secure password 123', 'different password 123']):
+            with redirect_stderr(io.StringIO()):
+                self.assertEqual(identity_main(arguments), 1)
+        with Database(path).transaction() as connection:
+            self.assertEqual(connection.execute('SELECT COUNT(*) FROM users').fetchone()[0], 0)
+        with mock.patch('src.identity.__main__.getpass.getpass', side_effect=['a secure password 123'] * 2) as prompt:
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(identity_main(arguments), 0)
+            self.assertEqual(prompt.call_count, 2)
+
+    def test_identity_help_does_not_create_database_or_prompt(self):
+        from src.identity.__main__ import main as identity_main
+        path = self.temp_path('missing.sqlite')
+        with mock.patch('src.identity.__main__.getpass.getpass') as prompt:
+            with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as result:
+                identity_main(['bootstrap-admin', '--database', str(path), '--help'])
+            self.assertEqual(result.exception.code, 0)
+            prompt.assert_not_called()
+        self.assertFalse(path.exists())
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

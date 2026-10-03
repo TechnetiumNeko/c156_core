@@ -91,6 +91,7 @@ RESERVED_METADATA_KEYS = frozenset(
         "branch_id",
         "object_id",
         "current_revision_id",
+        "acl", "access_rules", "visibility", "private_owner_id", "creator_id", "locked_by",
     }
 )
 

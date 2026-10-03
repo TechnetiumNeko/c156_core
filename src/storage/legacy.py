@@ -1130,6 +1130,8 @@ def _populate(
                 deleted_at=None,
             )
         )
+    connection.execute("INSERT INTO workspace_access_settings(workspace_id) VALUES (?)", (workspace_id,))
+    connection.execute("INSERT INTO content_ownership(workspace_id,object_id,creator_id) SELECT workspace_id,id,NULL FROM objects WHERE workspace_id=?", (workspace_id,))
     insert_import_report(connection, scan.source_digest, imported_at, scan.report)
     return workspace_id, branch_id
 
@@ -1374,7 +1376,7 @@ def _load_matching_report(target: Path, source_digest: str) -> dict | None:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
             if version != SCHEMA_VERSION:
                 raise UnsupportedSchema(
-                    "unsupported database protocol version",
+                    "unsupported database protocol version; initialize at a new path",
                     details={"expected": SCHEMA_VERSION, "actual": version, "path": str(target)},
                 )
             verify_integrity(connection)

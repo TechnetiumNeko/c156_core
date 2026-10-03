@@ -46,6 +46,7 @@ from tests.helpers import (
     entry_state,
     revision_state,
     seed_content_read_fixture,
+    seed_test_actors,
     table_counts,
 )
 
@@ -58,6 +59,7 @@ class ContentDeleteTestCase(TempPathTestCase):
     def setUp(self) -> None:
         super().setUp()
         self.fixture = seed_content_read_fixture(self.temp_path())
+        self.token = seed_test_actors(self.fixture.database, self.fixture.workspace_id)["owner"].session_token
         self.service = ContentService(self.fixture.database)
         # A second service instance opens its own connection on every call, so
         # mutations made through it are invisible to an already-prepared token.
@@ -90,18 +92,21 @@ class ContentDeleteTestCase(TempPathTestCase):
         before the snapshot so the recursive delete can prove it is left alone.
         """
 
-        tree = self.service.create_folder(self.scope, self.products_id, "tree")
+        tree = self.service.create_folder(self.scope, self.products_id, "tree", session_token=self.token)
         kept = self.service.create_document(
-            self.scope, tree.id, "kept", content="kept-body"
+            self.scope, tree.id, "kept", content="kept-body",
+            session_token=self.token,
         )
-        nested = self.service.create_folder(self.scope, tree.id, "nested")
+        nested = self.service.create_folder(self.scope, tree.id, "nested", session_token=self.token)
         deep = self.service.create_document(
-            self.scope, nested.id, "deep", content="deep-body"
+            self.scope, nested.id, "deep", content="deep-body",
+            session_token=self.token,
         )
-        stale = self.service.create_folder(self.scope, nested.id, "stale")
-        stale_node = self.service.get_node(self.scope, stale.id)
+        stale = self.service.create_folder(self.scope, nested.id, "stale", session_token=self.token)
+        stale_node = self.service.get_node(self.scope, stale.id, session_token=self.token)
         self.service.delete_node(
-            self.scope, stale.id, expected_version=stale_node.version
+            self.scope, stale.id, expected_version=stale_node.version,
+            session_token=self.token,
         )
         return {
             "tree": tree.id,
@@ -126,7 +131,7 @@ class ContentDeleteTestCase(TempPathTestCase):
         """
 
         ids = self.seed_delete_tree()
-        snapshot = self.service.prepare_delete(self.scope, ids["tree"])
+        snapshot = self.service.prepare_delete(self.scope, ids["tree"], session_token=self.token)
         mutate(ids, snapshot)
         watched = set(ids.values())
         before_entries = self.snapshot_state(watched)
@@ -138,7 +143,8 @@ class ContentDeleteTestCase(TempPathTestCase):
                 expected_version=snapshot.version,
                 recursive=True,
                 expected_subtree_token=snapshot.subtree_token,
-            )
+               session_token=self.token,
+           )
         self.assert_delete_failed_cleanly(before_entries, before_counts)
         return ids
 
@@ -147,7 +153,7 @@ class TestPrepareDelete(ContentDeleteTestCase):
     def test_returns_active_subtree_in_preorder_with_depths(self):
         ids = self.seed_delete_tree()
 
-        snapshot = self.service.prepare_delete(self.scope, ids["tree"])
+        snapshot = self.service.prepare_delete(self.scope, ids["tree"], session_token=self.token)
 
         self.assertEqual(snapshot.object_id, ids["tree"])
         self.assertEqual(snapshot.version, self.entry(ids["tree"])["version"])
@@ -168,7 +174,7 @@ class TestPrepareDelete(ContentDeleteTestCase):
     def test_token_matches_canonical_sha_encoding(self):
         ids = self.seed_delete_tree()
 
-        snapshot = self.service.prepare_delete(self.scope, ids["tree"])
+        snapshot = self.service.prepare_delete(self.scope, ids["tree"], session_token=self.token)
 
         pairs = sorted(
             ([item.node.id, item.node.version] for item in snapshot.items),
@@ -191,15 +197,16 @@ class TestPrepareDelete(ContentDeleteTestCase):
     def test_token_is_stable_and_changes_with_a_subtree_version(self):
         ids = self.seed_delete_tree()
 
-        first = self.service.prepare_delete(self.scope, ids["tree"])
-        second = self.service.prepare_delete(self.scope, ids["tree"])
+        first = self.service.prepare_delete(self.scope, ids["tree"], session_token=self.token)
+        second = self.service.prepare_delete(self.scope, ids["tree"], session_token=self.token)
         self.assertEqual(first.subtree_token, second.subtree_token)
 
-        deep = self.service.get_node(self.scope, ids["deep"])
+        deep = self.service.get_node(self.scope, ids["deep"], session_token=self.token)
         self.other_service.rename_node(
-            self.scope, ids["deep"], "deep-renamed", expected_version=deep.version
+            self.scope, ids["deep"], "deep-renamed", expected_version=deep.version,
+            session_token=self.token,
         )
-        third = self.service.prepare_delete(self.scope, ids["tree"])
+        third = self.service.prepare_delete(self.scope, ids["tree"], session_token=self.token)
         self.assertNotEqual(first.subtree_token, third.subtree_token)
         self.assertEqual(third.version, first.version)
         self.assertEqual(
@@ -208,31 +215,34 @@ class TestPrepareDelete(ContentDeleteTestCase):
 
     def test_rejects_document_protected_and_deleted_targets(self):
         with self.assertRaises(NotDirectory):
-            self.service.prepare_delete(self.scope, self.document_id)
+            self.service.prepare_delete(self.scope, self.document_id, session_token=self.token)
         with self.assertRaises(ProtectedNode):
-            self.service.prepare_delete(self.scope, self.scope.root_id)
+            self.service.prepare_delete(self.scope, self.scope.root_id, session_token=self.token)
         with self.assertRaises(ProtectedNode):
-            self.service.prepare_delete(self.root_scope, self.root_scope.root_id)
+            self.service.prepare_delete(self.root_scope, self.root_scope.root_id, session_token=self.token)
         with self.assertRaises(ProtectedNode):
-            self.service.prepare_delete(self.root_scope, self.fixture.admin_id)
+            self.service.prepare_delete(self.root_scope, self.fixture.admin_id, session_token=self.token)
         with self.assertRaises(NotFound):
             self.service.prepare_delete(
-                self.scope, self.fixture.deleted_folder_id
+                self.scope, self.fixture.deleted_folder_id,
+                session_token=self.token,
             )
         with self.assertRaises(NotFound):
-            self.service.prepare_delete(self.scope, "missing")
+            self.service.prepare_delete(self.scope, "missing", session_token=self.token)
 
     def test_respects_access_root_and_branch(self):
         products_scope = self.products_scope()
 
-        with self.assertRaises(PathOutsideRoot):
+        with self.assertRaises(NotFound):
             self.service.prepare_delete(
-                products_scope, self.fixture.chinese_folder_id
+                products_scope, self.fixture.chinese_folder_id,
+                session_token=self.token,
             )
         # The dev document lives in another branch, so the scoped lookup misses.
         with self.assertRaises(NotFound):
             self.service.prepare_delete(
-                products_scope, self.fixture.dev_document_id
+                products_scope, self.fixture.dev_document_id,
+                session_token=self.token,
             )
 
 
@@ -244,14 +254,15 @@ class TestNonRecursiveDelete(ContentDeleteTestCase):
         before_parent = self.entry(self.products_id)
 
         result = self.service.delete_node(
-            self.scope, self.document_id, expected_version=before_entry["version"]
+            self.scope, self.document_id, expected_version=before_entry["version"],
+            session_token=self.token,
         )
 
         self.assertIsNone(result)
         with self.assertRaises(NotFound):
-            self.service.read_document(self.scope, self.document_id)
+            self.service.read_document(self.scope, self.document_id, session_token=self.token)
         with self.assertRaises(NotFound):
-            self.service.get_node(self.scope, self.document_id)
+            self.service.get_node(self.scope, self.document_id, session_token=self.token)
         after = self.entry(self.document_id)
         self.assertIsNotNone(after["deleted_at"])
         self.assertEqual(after["modified_at"], after["deleted_at"])
@@ -267,15 +278,16 @@ class TestNonRecursiveDelete(ContentDeleteTestCase):
         self.assertEqual(parent_after["modified_at"], after["deleted_at"])
 
     def test_delete_empty_folder_succeeds(self):
-        folder = self.service.create_folder(self.scope, self.products_id, "empty")
+        folder = self.service.create_folder(self.scope, self.products_id, "empty", session_token=self.token)
         before_parent = self.entry(self.products_id)
 
         self.service.delete_node(
-            self.scope, folder.id, expected_version=folder.version
+            self.scope, folder.id, expected_version=folder.version,
+            session_token=self.token,
         )
 
         with self.assertRaises(NotFound):
-            self.service.get_node(self.scope, folder.id)
+            self.service.get_node(self.scope, folder.id, session_token=self.token)
         after_folder = self.entry(folder.id)
         self.assertIsNotNone(after_folder["deleted_at"])
         self.assertEqual(after_folder["version"], folder.version + 1)
@@ -295,12 +307,13 @@ class TestNonRecursiveDelete(ContentDeleteTestCase):
                 self.scope,
                 self.products_id,
                 expected_version=before_entries[self.products_id]["version"],
-            )
+               session_token=self.token,
+           )
 
         self.assert_delete_failed_cleanly(before_entries, before_counts)
         self.assertEqual(self.entry(self.scope.root_id), before_parent)
         self.assertEqual(
-            self.service.read_document(self.scope, self.document_id).content,
+            self.service.read_document(self.scope, self.document_id, session_token=self.token).content,
             self.fixture.concretecream_content,
         )
 
@@ -313,7 +326,8 @@ class TestNonRecursiveDelete(ContentDeleteTestCase):
                 self.document_id,
                 expected_version=before["version"],
                 expected_subtree_token="token",
-            )
+               session_token=self.token,
+           )
 
         self.assertEqual(self.entry(self.document_id), before)
 
@@ -323,7 +337,8 @@ class TestNonRecursiveDelete(ContentDeleteTestCase):
 
         with self.assertRaises(Conflict):
             self.service.delete_node(
-                self.scope, self.document_id, expected_version=before["version"] + 5
+                self.scope, self.document_id, expected_version=before["version"] + 5,
+                session_token=self.token,
             )
 
         self.assertEqual(self.entry(self.document_id), before)
@@ -331,36 +346,41 @@ class TestNonRecursiveDelete(ContentDeleteTestCase):
 
     def test_missing_deleted_and_protected_targets(self):
         with self.assertRaises(NotFound):
-            self.service.delete_node(self.scope, "missing", expected_version=1)
+            self.service.delete_node(self.scope, "missing", expected_version=1, session_token=self.token)
         with self.assertRaises(NotFound):
             self.service.delete_node(
                 self.scope,
                 self.fixture.deleted_folder_id,
                 expected_version=self.entry(self.fixture.deleted_folder_id)["version"],
-            )
+               session_token=self.token,
+           )
         with self.assertRaises(ProtectedNode):
             self.service.delete_node(
                 self.scope,
                 self.scope.root_id,
                 expected_version=self.entry(self.scope.root_id)["version"],
-            )
+               session_token=self.token,
+           )
         with self.assertRaises(ProtectedNode):
             self.service.delete_node(
                 self.root_scope,
                 self.fixture.admin_id,
                 expected_version=self.entry(self.fixture.admin_id)["version"],
-            )
+               session_token=self.token,
+           )
 
     def test_respects_access_root_and_branch(self):
-        with self.assertRaises(PathOutsideRoot):
+        with self.assertRaises(NotFound):
             self.service.delete_node(
                 self.products_scope(),
                 self.fixture.chinese_folder_id,
                 expected_version=self.entry(self.fixture.chinese_folder_id)["version"],
-            )
+               session_token=self.token,
+           )
         with self.assertRaises(NotFound):
             self.service.delete_node(
-                self.scope, self.fixture.dev_document_id, expected_version=1
+                self.scope, self.fixture.dev_document_id, expected_version=1,
+                session_token=self.token,
             )
 
     def test_rejects_invalid_arguments(self):
@@ -373,11 +393,13 @@ class TestNonRecursiveDelete(ContentDeleteTestCase):
                     self.document_id,
                     expected_version=before["version"],
                     recursive=recursive,
-                )
+                   session_token=self.token,
+               )
         for version in (0, -1, True, "1"):
             with self.assertRaises(InvalidArgument):
                 self.service.delete_node(
-                    self.scope, self.document_id, expected_version=version
+                    self.scope, self.document_id, expected_version=version,
+                    session_token=self.token,
                 )
         self.assertEqual(self.entry(self.document_id), before)
 
@@ -394,7 +416,8 @@ class TestRecursiveDelete(ContentDeleteTestCase):
                 ids["tree"],
                 expected_version=tree_version,
                 recursive=True,
-            )
+               session_token=self.token,
+           )
         with self.assertRaises(InvalidArgument):
             self.service.delete_node(
                 self.scope,
@@ -402,7 +425,8 @@ class TestRecursiveDelete(ContentDeleteTestCase):
                 expected_version=tree_version,
                 recursive=True,
                 expected_subtree_token=None,
-            )
+               session_token=self.token,
+           )
         with self.assertRaises(InvalidArgument):
             self.service.delete_node(
                 self.scope,
@@ -410,7 +434,8 @@ class TestRecursiveDelete(ContentDeleteTestCase):
                 expected_version=tree_version,
                 recursive=True,
                 expected_subtree_token="",
-            )
+               session_token=self.token,
+           )
         # recursive=True on a document is invalid even with a non-empty token.
         with self.assertRaises(InvalidArgument):
             self.service.delete_node(
@@ -419,7 +444,8 @@ class TestRecursiveDelete(ContentDeleteTestCase):
                 expected_version=deep_version,
                 recursive=True,
                 expected_subtree_token="token",
-            )
+               session_token=self.token,
+           )
         # A folder without recursive still rejects a token.
         with self.assertRaises(InvalidArgument):
             self.service.delete_node(
@@ -427,15 +453,17 @@ class TestRecursiveDelete(ContentDeleteTestCase):
                 ids["tree"],
                 expected_version=tree_version,
                 expected_subtree_token="token",
-            )
+               session_token=self.token,
+           )
 
     def test_deep_save_invalidates_the_delete_token(self):
         ids = self.seed_delete_tree()
-        snapshot = self.service.prepare_delete(self.scope, ids["tree"])
+        snapshot = self.service.prepare_delete(self.scope, ids["tree"], session_token=self.token)
 
-        doc = self.other_service.read_document(self.scope, ids["deep"])
+        doc = self.other_service.read_document(self.scope, ids["deep"], session_token=self.token)
         self.other_service.save_document(
-            self.scope, ids["deep"], "并发修改", expected_revision_id=doc.revision_id
+            self.scope, ids["deep"], "并发修改", expected_revision_id=doc.revision_id,
+            session_token=self.token,
         )
 
         before_entries = self.snapshot_state(ids.values())
@@ -447,17 +475,19 @@ class TestRecursiveDelete(ContentDeleteTestCase):
                 expected_version=snapshot.version,
                 recursive=True,
                 expected_subtree_token=snapshot.subtree_token,
-            )
+               session_token=self.token,
+           )
         self.assert_delete_failed_cleanly(before_entries, before_counts)
         self.assertEqual(
-            self.service.read_document(self.scope, ids["deep"]).content, "并发修改"
+            self.service.read_document(self.scope, ids["deep"], session_token=self.token).content, "并发修改"
         )
 
     def test_metadata_change_invalidates_the_delete_token(self):
         def mutate(ids, snapshot):
-            target = self.service.get_node(self.scope, ids["deep"])
+            target = self.service.get_node(self.scope, ids["deep"], session_token=self.token)
             self.other_service.set_metadata(
-                self.scope, ids["deep"], {"tag": "y"}, expected_version=target.version
+                self.scope, ids["deep"], {"tag": "y"}, expected_version=target.version,
+                session_token=self.token,
             )
 
         self.mutate_then_old_token_conflicts(mutate)
@@ -465,25 +495,28 @@ class TestRecursiveDelete(ContentDeleteTestCase):
     def test_insert_invalidates_the_delete_token(self):
         def mutate(ids, snapshot):
             self.other_service.create_document(
-                self.scope, ids["nested"], "added", content="added-body"
+                self.scope, ids["nested"], "added", content="added-body",
+                session_token=self.token,
             )
 
         self.mutate_then_old_token_conflicts(mutate)
 
     def test_rename_invalidates_the_delete_token(self):
         def mutate(ids, snapshot):
-            target = self.service.get_node(self.scope, ids["deep"])
+            target = self.service.get_node(self.scope, ids["deep"], session_token=self.token)
             self.other_service.rename_node(
-                self.scope, ids["deep"], "deep-renamed", expected_version=target.version
+                self.scope, ids["deep"], "deep-renamed", expected_version=target.version,
+                session_token=self.token,
             )
 
         self.mutate_then_old_token_conflicts(mutate)
 
     def test_move_out_invalidates_the_delete_token(self):
         def mutate(ids, snapshot):
-            target = self.service.get_node(self.scope, ids["deep"])
+            target = self.service.get_node(self.scope, ids["deep"], session_token=self.token)
             self.other_service.move_node(
-                self.scope, ids["deep"], self.products_id, expected_version=target.version
+                self.scope, ids["deep"], self.products_id, expected_version=target.version,
+                session_token=self.token,
             )
 
         self.mutate_then_old_token_conflicts(mutate)
@@ -492,36 +525,41 @@ class TestRecursiveDelete(ContentDeleteTestCase):
         def mutate(ids, snapshot):
             target = self.entry(ids["deep"])
             self.other_service.delete_node(
-                self.scope, ids["deep"], expected_version=target["version"]
+                self.scope, ids["deep"], expected_version=target["version"],
+                session_token=self.token,
             )
 
         self.mutate_then_old_token_conflicts(mutate)
 
     def test_noop_changes_keep_the_delete_token_valid(self):
         ids = self.seed_delete_tree()
-        snapshot = self.service.prepare_delete(self.scope, ids["tree"])
+        snapshot = self.service.prepare_delete(self.scope, ids["tree"], session_token=self.token)
 
-        kept = self.service.get_node(self.scope, ids["kept"])
+        kept = self.service.get_node(self.scope, ids["kept"], session_token=self.token)
         self.other_service.rename_node(
-            self.scope, ids["kept"], kept.name, expected_version=kept.version
+            self.scope, ids["kept"], kept.name, expected_version=kept.version,
+            session_token=self.token,
         )
         self.other_service.move_node(
-            self.scope, ids["kept"], ids["tree"], expected_version=kept.version
+            self.scope, ids["kept"], ids["tree"], expected_version=kept.version,
+            session_token=self.token,
         )
-        deep = self.other_service.read_document(self.scope, ids["deep"])
+        deep = self.other_service.read_document(self.scope, ids["deep"], session_token=self.token)
         self.other_service.save_document(
             self.scope,
             ids["deep"],
             deep.content,
             expected_revision_id=deep.revision_id,
-        )
-        nested = self.service.get_node(self.scope, ids["nested"])
-        nested_metadata = self.service.get_metadata(self.scope, ids["nested"])
+           session_token=self.token,
+       )
+        nested = self.service.get_node(self.scope, ids["nested"], session_token=self.token)
+        nested_metadata = self.service.get_metadata(self.scope, ids["nested"], session_token=self.token)
         self.other_service.set_metadata(
-            self.scope, ids["nested"], nested_metadata, expected_version=nested.version
+            self.scope, ids["nested"], nested_metadata, expected_version=nested.version,
+            session_token=self.token,
         )
 
-        after = self.service.prepare_delete(self.scope, ids["tree"])
+        after = self.service.prepare_delete(self.scope, ids["tree"], session_token=self.token)
         self.assertEqual(after.subtree_token, snapshot.subtree_token)
 
         self.service.delete_node(
@@ -530,26 +568,28 @@ class TestRecursiveDelete(ContentDeleteTestCase):
             expected_version=snapshot.version,
             recursive=True,
             expected_subtree_token=snapshot.subtree_token,
-        )
+           session_token=self.token,
+       )
         for object_id in (ids["tree"], ids["kept"], ids["nested"], ids["deep"]):
             self.assertIsNotNone(self.entry(object_id)["deleted_at"])
 
     def test_change_outside_the_subtree_keeps_the_token_valid(self):
         ids = self.seed_delete_tree()
-        snapshot = self.service.prepare_delete(self.scope, ids["tree"])
+        snapshot = self.service.prepare_delete(self.scope, ids["tree"], session_token=self.token)
 
-        chinese = self.service.get_node(self.scope, self.fixture.chinese_folder_id)
+        chinese = self.service.get_node(self.scope, self.fixture.chinese_folder_id, session_token=self.token)
         self.other_service.rename_node(
             self.scope,
             self.fixture.chinese_folder_id,
             "中文 目录",
             expected_version=chinese.version,
-        )
+           session_token=self.token,
+       )
         parent_before = self.entry(self.products_id)["version"]
-        self.other_service.create_folder(self.scope, self.products_id, "other")
+        self.other_service.create_folder(self.scope, self.products_id, "other", session_token=self.token)
         self.assertGreater(self.entry(self.products_id)["version"], parent_before)
 
-        after = self.service.prepare_delete(self.scope, ids["tree"])
+        after = self.service.prepare_delete(self.scope, ids["tree"], session_token=self.token)
         self.assertEqual(after.subtree_token, snapshot.subtree_token)
         self.service.delete_node(
             self.scope,
@@ -557,7 +597,8 @@ class TestRecursiveDelete(ContentDeleteTestCase):
             expected_version=snapshot.version,
             recursive=True,
             expected_subtree_token=snapshot.subtree_token,
-        )
+           session_token=self.token,
+       )
         self.assertIsNotNone(self.entry(ids["tree"])["deleted_at"])
 
     def test_recursive_delete_marks_subtree_and_touches_parent_once(self):
@@ -568,7 +609,7 @@ class TestRecursiveDelete(ContentDeleteTestCase):
         before_parent = self.entry(self.products_id)
         before_counts = self.counts()
         before_revisions = {oid: self.revisions(oid) for oid in active}
-        snapshot = self.service.prepare_delete(self.scope, ids["tree"])
+        snapshot = self.service.prepare_delete(self.scope, ids["tree"], session_token=self.token)
 
         self.service.delete_node(
             self.scope,
@@ -576,7 +617,8 @@ class TestRecursiveDelete(ContentDeleteTestCase):
             expected_version=snapshot.version,
             recursive=True,
             expected_subtree_token=snapshot.subtree_token,
-        )
+           session_token=self.token,
+       )
 
         timestamps = set()
         for object_id in active:
@@ -619,13 +661,13 @@ class TestRecursiveDelete(ContentDeleteTestCase):
         # The deleted subtree is invisible to every scoped read.
         for object_id in active:
             with self.assertRaises(NotFound):
-                self.service.get_node(self.scope, object_id)
+                self.service.get_node(self.scope, object_id, session_token=self.token)
         self.assertNotIn(
             ids["tree"],
-            [node.id for node in self.service.list_children(self.scope, self.products_id)],
+            [node.id for node in self.service.list_children(self.scope, self.products_id, session_token=self.token)],
         )
         tree_ids = {
-            item.node.id for item in self.service.list_tree(self.scope, self.scope.root_id)
+            item.node.id for item in self.service.list_tree(self.scope, self.scope.root_id, session_token=self.token)
         }
         self.assertFalse(tree_ids & set(active))
 
@@ -636,7 +678,7 @@ class TestDeleteRollback(ContentDeleteTestCase):
         before_entries = self.snapshot_state(ids.values())
         before_parent = self.entry(self.products_id)
         before_counts = self.counts()
-        snapshot = self.service.prepare_delete(self.scope, ids["tree"])
+        snapshot = self.service.prepare_delete(self.scope, ids["tree"], session_token=self.token)
         original = Repository.soft_delete_entries
 
         def explode(repo_self, object_ids, deleted_at):
@@ -651,7 +693,8 @@ class TestDeleteRollback(ContentDeleteTestCase):
                     expected_version=snapshot.version,
                     recursive=True,
                     expected_subtree_token=snapshot.subtree_token,
-                )
+                   session_token=self.token,
+               )
 
         self.assert_delete_failed_cleanly(before_entries, before_counts)
         self.assertEqual(self.entry(self.products_id), before_parent)
@@ -661,7 +704,7 @@ class TestDeleteRollback(ContentDeleteTestCase):
         before_entries = self.snapshot_state(ids.values())
         before_parent = self.entry(self.products_id)
         before_counts = self.counts()
-        snapshot = self.service.prepare_delete(self.scope, ids["tree"])
+        snapshot = self.service.prepare_delete(self.scope, ids["tree"], session_token=self.token)
         original = Repository.soft_delete_entries
 
         def lie(repo_self, object_ids, deleted_at):
@@ -676,7 +719,8 @@ class TestDeleteRollback(ContentDeleteTestCase):
                     expected_version=snapshot.version,
                     recursive=True,
                     expected_subtree_token=snapshot.subtree_token,
-                )
+                   session_token=self.token,
+               )
 
         self.assert_delete_failed_cleanly(before_entries, before_counts)
         self.assertEqual(self.entry(self.products_id), before_parent)
@@ -799,10 +843,11 @@ class TestSoftDeleteEntriesDao(ContentDeleteTestCase):
             self.assertEqual(after["deleted_at"], now)
 
     def test_recursive_delete_batches_under_a_lowered_variable_limit(self):
-        folder = self.service.create_folder(self.scope, self.products_id, "bulk")
+        folder = self.service.create_folder(self.scope, self.products_id, "bulk", session_token=self.token)
         child_ids = [
             self.service.create_document(
-                self.scope, folder.id, "doc-{:02d}".format(index), content=""
+                self.scope, folder.id, "doc-{:02d}".format(index), content="",
+                session_token=self.token,
             ).id
             for index in range(12)
         ]
@@ -814,14 +859,15 @@ class TestSoftDeleteEntriesDao(ContentDeleteTestCase):
             object_id: self.entry(object_id)["version"]
             for object_id in [folder.id, *child_ids]
         }
-        snapshot = limited_service.prepare_delete(self.scope, folder.id)
+        snapshot = limited_service.prepare_delete(self.scope, folder.id, session_token=self.token)
         limited_service.delete_node(
             self.scope,
             folder.id,
             expected_version=snapshot.version,
             recursive=True,
             expected_subtree_token=snapshot.subtree_token,
-        )
+           session_token=self.token,
+       )
 
         for object_id in [folder.id, *child_ids]:
             after = self.entry(object_id)
@@ -835,7 +881,7 @@ if __name__ == "__main__":
 
 class TestProtectionMessage(ContentDeleteTestCase):
     def test_protection_message_includes_delete(self):
-        root = self.service.get_node(self.root_scope, self.fixture.main_id)
+        root = self.service.get_node(self.root_scope, self.fixture.main_id, session_token=self.token)
         with self.assertRaises(ProtectedNode) as caught:
-            self.service.delete_node(self.root_scope, root.id, expected_version=root.version)
+            self.service.delete_node(self.root_scope, root.id, expected_version=root.version, session_token=self.token)
         self.assertIn("deleted", str(caught.exception))
