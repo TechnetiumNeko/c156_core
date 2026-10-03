@@ -5,7 +5,9 @@ from contextlib import contextmanager
 from typing import Callable, Iterator
 from datetime import datetime, timezone
 
-from ..core.errors import AlreadyExists, StorageBusy, UnsupportedSchema
+from ..core.errors import AlreadyExists, StorageBusy, UnsupportedSchema, Unauthenticated
+from ..identity.models import Principal
+from ..identity.tokens import token_digest
 from ..core.models import ContentScope
 from ..storage.database import Database
 from ..storage.errors import BusyError, ConstraintError, SchemaError
@@ -23,7 +25,11 @@ class _ApplicationTransaction:
 
     def __init__(self, connection, clock: Callable[[], datetime]) -> None:
         self._connection = connection
-        self.clock = clock
+        instant = clock()
+        if instant.tzinfo is None or instant.utcoffset() is None:
+            raise ValueError("clock must return a timezone-aware datetime")
+        self.now = instant.astimezone(timezone.utc)
+        self.clock = lambda: self.now
         self.identity = IdentityRepository(connection)
         self.audit = AuditRepository(connection)
         self.throttles = AuthThrottleRepository(connection)
@@ -31,6 +37,19 @@ class _ApplicationTransaction:
     def _require_active(self) -> None:
         if self._connection is None:
             raise RuntimeError("application transaction has ended")
+
+    def resolve_principal(self, token: str | None) -> Principal:
+        self._require_active()
+        if token is None:
+            return Principal(None, False)
+        session = self.identity.get_session(token_digest(token))
+        user = self.identity.get_user(session.user_id) if session else None
+        if (session is None or user is None or session.revoked_at is not None
+                or datetime.fromisoformat(session.expires_at) <= self.now
+                or user.status != 'active'
+                or session.credential_version != user.credential_version):
+            raise Unauthenticated('authentication failed')
+        return Principal(user.id, user.site_admin)
 
     def content(self, scope: ContentScope) -> ContentOperations:
         self._require_active()
