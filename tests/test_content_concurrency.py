@@ -232,7 +232,8 @@ class TestConcurrentDeleteSnapshot(ContentConcurrencyTestCase):
                 expected_version=snapshot.version,
                 recursive=True,
                 expected_subtree_token=snapshot.subtree_token,
-            )
+               session_token=self.token,
+           )
 
         # The concurrent content survives and no extra row was deleted.
         after = table_counts(self.fixture.path)
@@ -273,7 +274,7 @@ class TestSaveAfterMoveOrDelete(ContentConcurrencyTestCase):
         service = ContentService(self.fixture.database)
         other = ContentService(Database(self.fixture.path))
         doc = service.read_document(self.scope, self.fixture.concretecream_id, session_token=self.token)
-        other.move_node(self.scope, doc.id, self.scope.root_id, expected_version=doc.version)
+        other.move_node(self.scope, doc.id, self.scope.root_id, expected_version=doc.version, session_token=self.token)
         saved = service.save_document(self.scope, doc.id, "moved buffer",
                                       expected_revision_id=doc.revision_id, session_token=self.token)
         self.assertEqual(saved.content, "moved buffer")
@@ -284,7 +285,7 @@ class TestSaveAfterMoveOrDelete(ContentConcurrencyTestCase):
         service = ContentService(self.fixture.database)
         doc = service.read_document(self.scope, self.fixture.concretecream_id, session_token=self.token)
         ContentService(Database(self.fixture.path)).move_node(
-            self.fixture.root_scope, doc.id, self.fixture.admin_id, expected_version=doc.version)
+            self.fixture.root_scope, doc.id, self.fixture.admin_id, expected_version=doc.version, session_token=self.token)
         before = revision_state(self.fixture.path, doc.id)
         with self.assertRaises(NotFound):
             service.save_document(self.scope, doc.id, "old buffer", expected_revision_id=doc.revision_id, session_token=self.token)
@@ -295,7 +296,7 @@ class TestSaveAfterMoveOrDelete(ContentConcurrencyTestCase):
         from tests.helpers import revision_state
         service = ContentService(self.fixture.database)
         doc = service.read_document(self.scope, self.fixture.concretecream_id, session_token=self.token)
-        ContentService(Database(self.fixture.path)).delete_node(self.scope, doc.id, expected_version=doc.version)
+        ContentService(Database(self.fixture.path)).delete_node(self.scope, doc.id, expected_version=doc.version, session_token=self.token)
         before = revision_state(self.fixture.path, doc.id)
         with self.assertRaises(NotFound):
             service.save_document(self.scope, doc.id, "old buffer", expected_revision_id=doc.revision_id, session_token=self.token)

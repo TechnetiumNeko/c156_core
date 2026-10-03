@@ -243,3 +243,52 @@ class AccessService:
                     'access.set_visibility', 'object', object_id, json.dumps(before, sort_keys=True),
                     json.dumps(after, sort_keys=True), work.now.isoformat()))
             return self._object(work, scope, actor, member, repo, object_id)
+
+    def freeze_document(self, scope, object_id, *, session_token, expected_version):
+        return self._freeze_change(scope, object_id, session_token, expected_version, freeze=True)
+
+    def unfreeze_document(self, scope, object_id, *, session_token, expected_version):
+        return self._freeze_change(scope, object_id, session_token, expected_version, freeze=False)
+
+    def _freeze_change(self, scope, object_id, token, expected_version, *, freeze):
+        from ..core.errors import Frozen, NotDocument
+        from ..storage.access_repository import LockRecord
+        from .content import ContentService
+        with self._uow.transaction(write=True) as work:
+            actor = work.resolve_principal(token)
+            if actor.user_id is None:
+                raise Unauthenticated('authentication required')
+            operations = work.authorized_content(scope, actor)
+            entry = operations.get_entry(scope, object_id)
+            policy = operations._policy
+            if policy.role is None:
+                raise Forbidden('active membership required')
+            if entry.kind != 'document':
+                raise NotDocument('Object is not a document')
+            repo = work.access(scope)
+            settings = repo.get_settings()
+            if type(expected_version) is not int or expected_version != settings.version:
+                raise Conflict('workspace authorization changed')
+            old = repo.get_lock(object_id)
+            if freeze:
+                operations.require_write(scope, object_id, 'edit')
+                if not (policy.management or policy.ownership.get(object_id) == actor.user_id):
+                    raise Forbidden('document creator or workspace administrator required')
+                if old and old.locked_by != actor.user_id:
+                    raise Frozen('Content is frozen')
+            elif not (policy.management or old and old.locked_by == actor.user_id):
+                raise Forbidden('lock owner or workspace administrator required')
+            if (freeze and old is None) or (not freeze and old is not None):
+                before = {'locked_by': old.locked_by if old else None, 'version': settings.version}
+                if freeze:
+                    repo.insert_lock(LockRecord(scope.workspace_id, scope.branch_id, object_id,
+                        actor.user_id, work.now.isoformat()))
+                else:
+                    repo.delete_lock(object_id)
+                if not repo.update_settings(expected_version=settings.version):
+                    raise Conflict('workspace authorization changed')
+                after = {'locked_by': actor.user_id if freeze else None, 'version': settings.version + 1}
+                work.audit.append(AuditEventRecord(str(uuid4()), actor.user_id, scope.workspace_id,
+                    'access.freeze_document' if freeze else 'access.unfreeze_document', 'object', object_id,
+                    json.dumps(before, sort_keys=True), json.dumps(after, sort_keys=True), work.now.isoformat()))
+            return ContentService._access_view(work.authorized_content(scope, actor), scope, object_id)

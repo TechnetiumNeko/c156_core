@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 
 from ..core.errors import (
     AlreadyExists,
+    Forbidden,
     Conflict,
     DirectoryNotEmpty,
     InvalidArgument,
@@ -920,6 +921,24 @@ class ContentOperations:
             )
         return entry
 
+
+    def require_structure(self, scope, object_id, action):
+        self.require_write(scope, object_id, action)
+        records = self._repo.subtree(object_id)
+        self._policy.require_unfrozen(tuple(records), operation=action)
+
+    def qualify_delete(self, scope, object_id, *, raw):
+        # Gate the requested target before inspecting the complete raw subtree.
+        entry = self.get_entry(scope, object_id)
+        self._require_unprotected(self._repo, entry)
+        records = raw.active_subtree(object_id)
+        for record in records:
+            try:
+                self._policy.require_action(raw.ancestor_chain(record.object_id), 'delete')
+                self._require_unprotected(self._repo, record)
+            except (NotFound, Forbidden, ProtectedNode) as exc:
+                raise Forbidden('Content action is not permitted') from exc
+        self._policy.require_unfrozen(records, operation='delete')
 
     def require_write(self, scope, object_id, action, *, unfrozen=False):
         entry = self.get_entry(scope, object_id)

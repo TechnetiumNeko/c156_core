@@ -168,30 +168,45 @@ class ContentService:
             operations.require_write(scope, object_id, 'edit', unfrozen=True)
             return operations.set_metadata(scope, object_id, changes, expected_version=expected_version)
 
-    def rename_node(self, scope: ContentScope, object_id: str, name: str, *, expected_version: int) -> NodeSnapshot:
+    def rename_node(self, scope: ContentScope, object_id: str, name: str, *, expected_version: int, session_token: str | None) -> NodeSnapshot:
         self._require_str(object_id, "object_id")
         validate_name(name)
         self._require_positive_version(expected_version)
-        with self._uow.name_conflicts({"object_id": object_id, "name": name}):
+        with self._uow.name_conflicts({}):
             with self._write() as work:
-                return work.content(scope).rename_node(scope, object_id, name, expected_version=expected_version)
+                operations, actor = self._writer(work, scope, session_token)
+                operations.require_structure(scope, object_id, 'rename')
+                operations.rename_node(scope, object_id, name, expected_version=expected_version)
+                return work.authorized_content(scope, actor).get_node(scope, object_id)
 
-    def move_node(self, scope: ContentScope, object_id: str, parent_id: str, *, expected_version: int, name: str | None=None) -> NodeSnapshot:
+    def move_node(self, scope: ContentScope, object_id: str, parent_id: str, *, expected_version: int, name: str | None=None, session_token: str | None) -> NodeSnapshot:
         self._require_str(object_id, "object_id")
         self._require_str(parent_id, "parent_id")
         self._require_positive_version(expected_version)
         if name is not None:
             validate_name(name)
-        with self._uow.name_conflicts({"object_id": object_id, "parent_id": parent_id, "name": name}):
+        with self._uow.name_conflicts({}):
             with self._write() as work:
-                return work.content(scope).move_node(scope, object_id, parent_id, expected_version=expected_version, name=name)
+                operations, actor = self._writer(work, scope, session_token)
+                entry = operations.get_entry(scope, object_id)
+                if entry.parent_id == parent_id:
+                    operations.require_structure(scope, object_id, 'rename')
+                else:
+                    operations.require_structure(scope, object_id, 'move')
+                    operations.require_write(scope, parent_id, 'create')
+                    if not operations._policy.management:
+                        raise Forbidden('workspace administrator required')
+                operations.move_node(scope, object_id, parent_id, expected_version=expected_version, name=name)
+                return work.authorized_content(scope, actor).get_node(scope, object_id)
 
     def prepare_delete(self, scope: ContentScope, folder_id: str, *, session_token: str | None) -> DeleteSnapshot:
         self._require_str(folder_id, "folder_id")
         with self._read() as work:
-            return work.authorized_content(scope, work.resolve_principal(session_token)).prepare_delete(scope, folder_id)
+            operations, _ = self._writer(work, scope, session_token)
+            operations.qualify_delete(scope, folder_id, raw=work.content(scope))
+            return operations.prepare_delete(scope, folder_id)
 
-    def delete_node(self, scope: ContentScope, object_id: str, *, expected_version: int, recursive: bool=False, expected_subtree_token: str | None=None) -> None:
+    def delete_node(self, scope: ContentScope, object_id: str, *, expected_version: int, recursive: bool=False, expected_subtree_token: str | None=None, session_token: str | None) -> None:
         self._require_str(object_id, "object_id")
         self._require_positive_version(expected_version)
         if not isinstance(recursive, bool):
@@ -214,7 +229,9 @@ class ContentService:
                 details={"object_id": object_id},
             )
         with self._write() as work:
-            return work.content(scope).delete_node(scope, object_id, expected_version=expected_version, recursive=recursive, expected_subtree_token=expected_subtree_token)
+            operations, _ = self._writer(work, scope, session_token)
+            operations.qualify_delete(scope, object_id, raw=work.content(scope))
+            return operations.delete_node(scope, object_id, expected_version=expected_version, recursive=recursive, expected_subtree_token=expected_subtree_token)
 
     @staticmethod
     def _access_view(operations, scope, object_id):
@@ -227,7 +244,8 @@ class ContentService:
         lock = policy.locks.get(object_id)
         own_lock = member and lock == policy.principal.user_id
         actions = []
-        protected = object_id in operations._protected_ids(operations._repo)
+        protected_ids = operations._protected_ids(operations._repo)
+        protected = object_id in protected_ids
         for action in ACTIONS:
             if not policy.decide(chain, action).allowed:
                 continue
@@ -239,6 +257,8 @@ class ContentService:
                 continue
             if action in ('edit', 'rename', 'move', 'delete'):
                 records = (entry,) if entry.kind == 'document' else operations._repo.subtree(object_id)
+                if action == 'delete' and any(r.object_id in protected_ids for r in records):
+                    continue
                 if action == 'delete' and any(not policy.decide(
                         tuple(reversed(operations._repo.ancestors(r.object_id))), 'delete').allowed
                         for r in records):
