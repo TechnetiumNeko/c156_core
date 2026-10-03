@@ -213,6 +213,7 @@ function updatePreview() {
 }
 
 function renderDocument() {
+  merging = false; element('merge').disabled = false;
   ui.editor.value = state.draft;
   ui.latestPanel.hidden = true;
   clearError('conflict-error');
@@ -249,19 +250,18 @@ async function saveDocument() {
   renderEditorStatus();
   try {
     const { document: snapshot, access } = await client.saveDocument(request);
-    if(epoch!==client.epoch)return false;
-    documentAccess=access;
-    if (!state.saveSucceeded(request, snapshot)) return false;
+    if(epoch!==client.epoch || !state.isSaveCurrent(request))return false;
+    if (!state.saveSucceeded(request, snapshot, () => { documentAccess = access; })) return false;
     directory.remember(snapshot);
     directory.render();
     renderEditorStatus();
     return !state.hasUnsavedWork;
   } catch (error) {
-    if(epoch!==client.epoch)return false;
+    if(epoch!==client.epoch || !state.isSaveCurrent(request))return false;
     if(error.status===401){await sessionLost();return false;}
     state.saveFailed(request,error.code);
     if([403,404].includes(error.status)){documentAccess=null;await refreshDocumentAccess();}
-    if(epoch!==client.epoch)return false;
+    if(epoch!==client.epoch || request.epoch!==state.epoch || request.userId!==state.identity || request.object_id!==state.document?.id || request.selection!==state.loading || request.documentGeneration!==state.documentGeneration)return false;
     renderEditorStatus();
     showError(error);
     return false;
@@ -408,45 +408,56 @@ async function createNode(event) {
 }
 
 // 冲突：读取最新正文不改草稿；只有显式开始合并才换编辑基础。
-async function fetchLatestDocument() {
-  const epoch=client.epoch;
-  if(!user)return null;
-  const objectId = state.document?.id;
-  if (!objectId) return null;
-  const { document: snapshot } = await client.readDocument(objectId);
-  if (epoch!==client.epoch || state.document?.id !== objectId) return null;
-  if(!state.setLatest(snapshot,state.epoch))return null;
+async function fetchLatestDocument(ticket) {
+  const epoch = client.epoch;
+  if (!user || !state.isLatestCurrent(ticket)) return null;
+  const { document: snapshot } = await client.readDocument(ticket.objectId);
+  if (epoch !== client.epoch || !state.isLatestCurrent(ticket)) return null;
+  if (!state.setLatest(snapshot, ticket.epoch, ticket)) return null;
   ui.latest.textContent = snapshot.content;
   ui.latestPanel.hidden = false;
   return snapshot;
 }
 
 async function viewLatestDocument() {
-  const epoch=client.epoch;
+  // A new latest request supersedes any pending merge request synchronously.
+  merging = false; element('merge').disabled = false;
+  const epoch = client.epoch;
+  const ticket = state.beginLatest();
+  const current = () => epoch === client.epoch && state.isLatestCurrent(ticket);
   try {
-    await fetchLatestDocument();
-    if(epoch===client.epoch)clearError('conflict-error');
+    await fetchLatestDocument(ticket);
+    if (current()) clearError('conflict-error');
   } catch (error) {
-    if(epoch===client.epoch){if(error.status===401)await sessionLost();else showError(error, 'conflict-error');}
+    if (!current()) return;
+    if (error.status === 401) await sessionLost();
+    else showError(error, 'conflict-error');
   }
 }
 
 async function startManualMerge() {
   if (merging) return;
-  const epoch=client.epoch;
+  const epoch = client.epoch;
+  const ticket = state.beginLatest();
+  const current = () => epoch === client.epoch && state.isLatestCurrent(ticket);
   merging = true;
   element('merge').disabled = true;
   try {
-    if (await fetchLatestDocument() && epoch===client.epoch) {
-      state.startMerge();
+    if (await fetchLatestDocument(ticket) && current() && state.startMerge(ticket)) {
       clearError();
       renderDocument();
       ui.editor.focus();
     }
   } catch (error) {
-    if(epoch===client.epoch){if(error.status===401)await sessionLost();else showError(error, 'conflict-error');}
+    if (!current()) return;
+    if (error.status === 401) await sessionLost();
+    else showError(error, 'conflict-error');
   } finally {
-    if(epoch===client.epoch){merging = false;element('merge').disabled = false;}
+    // Merge itself advances the open generation; operation ownership controls cleanup.
+    if (epoch === client.epoch && ticket.epoch === state.epoch && ticket.selection === state.loading && ticket.generation === state.latestGeneration) {
+      merging = false;
+      element('merge').disabled = false;
+    }
   }
 }
 
@@ -471,7 +482,7 @@ function setViewMode(mode) {
 
 // 新按钮从这里接入：按钮 ID → 具名操作函数，不需要注册器或框架。
 function bindEvents() {
-  element('discard-draft').onclick=()=>{if(user && window.confirm('明确放弃当前草稿、合并对照与未确认保存？')){state.setIdentity(user.id,{discard:true});documentAccess=null;hideDraft();renderEditorStatus();}};
+  element('discard-draft').onclick=()=>{if(user && window.confirm('明确放弃当前草稿、合并对照与未确认保存？')){state.setIdentity(user.id,{discard:true});merging=false;element('merge').disabled=false;documentAccess=null;hideDraft();renderEditorStatus();}};
   element('freeze').onclick=()=>freezeDocument(true);element('unfreeze').onclick=()=>freezeDocument(false);
   element('manage-access').onclick=()=>{accessTarget=state.document?.id;element('access-panel').hidden=false;accessPanel.load();};
   element('manage-folder-access').onclick=()=>{accessTarget=directory.selectedFolderId;element('access-panel').hidden=false;accessPanel.load();};

@@ -144,3 +144,34 @@ test('access tickets bind document selection and latest permission request, incl
   s.setIdentity(null);
   assert.equal(s.isAccessCurrent(current), false);
 });
+test('save acknowledgement controls capability side effects after discard and readonly selection', () => {
+  const s = new EditorState(); s.setIdentity('alice'); s.open(doc()); s.edit('submitted');
+  const old = s.beginSave();
+  s.setIdentity('alice', {discard:true}); s.open(doc('readonly', 'rb', 'b'));
+  let access = {actions:['read']};
+  const editable = {actions:['read','edit']};
+  assert.equal(s.saveSucceeded(old, doc('submitted','r2'), () => {access=editable;}), false);
+  assert.deepEqual(access, {actions:['read']});
+  assert.equal(s.saveFailed(old, 'conflict'), false);
+  assert.equal(s.conflict, false); assert.equal(s.document.id, 'b');
+  s.edit('valid'); const valid=s.beginSave();
+  assert.equal(s.saveSucceeded(valid,doc('valid','rb2','b'),()=>{access=editable;}),true);
+  assert.deepEqual(access,editable); assert.equal(s.revision,'rb2');
+});
+test('latest acceptance and merge keep reopened bases safe and reject superseded requests', () => {
+  const s=new EditorState();s.setIdentity('alice');s.open(doc());s.edit('mine');
+  const old=s.beginLatest();
+  s.setIdentity('alice',{discard:true});s.open(doc('reopened','a2'));s.edit('new draft');
+  assert.equal(s.setLatest(doc('old','a1'),old.epoch,old),false);
+  assert.equal(s.startMerge(old),false);
+  assert.equal(s.revision,'a2');assert.equal(s.draft,'new draft');assert.equal(s.latest,null);
+  const first=s.beginLatest();const latest=s.beginLatest();
+  assert.equal(s.setLatest(doc('superseded','a3'),first.epoch,first),false);
+  assert.equal(s.setLatest(doc('current','a4'),latest.epoch,latest),true);
+  assert.equal(s.startMerge(first),false);assert.equal(s.revision,'a2');
+  assert.equal(s.startMerge(latest),true);assert.equal(s.revision,'a4');
+  assert.equal(s.draft,'current');assert.equal(s.comparisonDraft,'new draft');
+  const beforeSelection=s.beginLatest();s.finishLoad(s.beginLoad(),doc('b','b1','b'));s.finishLoad(s.beginLoad(),doc('a again','a5'));
+  assert.equal(s.setLatest(doc('stale','a4'),beforeSelection.epoch,beforeSelection),false);
+  assert.equal(s.startMerge(beforeSelection),false);assert.equal(s.revision,'a5');
+});

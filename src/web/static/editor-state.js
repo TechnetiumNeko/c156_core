@@ -15,6 +15,7 @@ export class EditorState {
     this.revision = null; // 当前草稿基于的正文修订
     this.documentGeneration = 0;
     this.accessGeneration = 0;
+    this.latestGeneration = 0;
     this.loading = 0; // 加载序号：后发的请求作废前一个请求
     this.saving = null; // 在途保存请求，含发送时的正文与修订
     this.conflict = false;
@@ -102,12 +103,33 @@ export class EditorState {
       ticket.accessGeneration === this.accessGeneration;
   }
 
+  beginLatest() {
+    return {objectId: this.document?.id, epoch: this.epoch, userId: this.identity,
+      selection: this.loading, documentGeneration: this.documentGeneration,
+      generation: ++this.latestGeneration};
+  }
+
+  isLatestCurrent(ticket) {
+    return !this.paused && !!ticket.objectId && ticket.objectId === this.document?.id &&
+      ticket.epoch === this.epoch && ticket.userId === this.identity &&
+      ticket.selection === this.loading && ticket.documentGeneration === this.documentGeneration &&
+      ticket.generation === this.latestGeneration;
+  }
+
+  isSaveCurrent(request) {
+    return this.saving === request && request.epoch === this.epoch &&
+      request.userId === this.identity && request.object_id === this.document?.id &&
+      request.selection === this.loading && request.documentGeneration === this.documentGeneration;
+  }
+
   beginSave() {
     if (this.paused || (!this.dirty && !this.uncertainSave) || this.saving || this.conflict) return null;
     // 捕获发送时的内容；之后的输入继续留在 draft，不能被响应覆盖。
     this.saving = {
       epoch: this.epoch,
       userId: this.identity,
+      selection: this.loading,
+      documentGeneration: this.documentGeneration,
       object_id: this.document.id,
       content: this.draft,
       expected_revision_id: this.revision,
@@ -115,8 +137,8 @@ export class EditorState {
     return this.saving;
   }
 
-  saveSucceeded(request, snapshot) {
-    if (this.saving !== request || request.epoch !== this.epoch || request.userId !== this.identity || this.document?.id !== request.object_id) {
+  saveSucceeded(request, snapshot, accepted = () => {}) {
+    if (!this.isSaveCurrent(request)) {
       return false;
     }
     this.saving = null;
@@ -128,11 +150,12 @@ export class EditorState {
     this.conflict = false;
     // 不给 draft 赋值：保存期间可能已有新输入。
     if (!this.dirty) this.comparisonDraft = null;
+    accepted();
     return true;
   }
 
   saveFailed(request, code) {
-    if (this.saving !== request) return false;
+    if (!this.isSaveCurrent(request)) return false;
     this.saving = null;
     if(['network','response','unauthenticated'].includes(code))this.uncertainSave=true;
     this.conflict = code === 'conflict';
@@ -140,12 +163,14 @@ export class EditorState {
     return true;
   }
 
-  setLatest(snapshot, epoch = this.epoch) {
+  setLatest(snapshot, epoch = this.epoch, ticket = null) {
+    if (ticket && !this.isLatestCurrent(ticket)) return false;
     if (epoch === this.epoch && !this.paused && snapshot.id === this.document?.id) { this.latest = snapshot; return true; }
     return false;
   }
 
-  startMerge() {
+  startMerge(ticket = null) {
+    if (ticket && !this.isLatestCurrent(ticket)) return false;
     if (!this.latest) return false;
     const oldDraft = this.draft;
     this.open(this.latest);
