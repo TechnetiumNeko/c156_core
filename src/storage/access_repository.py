@@ -104,6 +104,24 @@ class AccessRepository:
     def list_rules(self, object_id: str | None = None) -> tuple[AccessRuleRecord, ...]:
         return tuple(AccessRuleRecord(**dict(r)) for r in self.connection.execute('SELECT * FROM access_rules WHERE workspace_id=? AND branch_id=? AND (? IS NULL OR object_id=?) ORDER BY object_id,subject_type,subject_key,action', (self.workspace_id,self.branch_id,object_id,object_id)))
 
+    def list_workspace_rules(self) -> tuple[AccessRuleRecord, ...]:
+        return tuple(AccessRuleRecord(**dict(r)) for r in self.connection.execute(
+            'SELECT * FROM access_rules WHERE workspace_id=? ORDER BY branch_id,object_id,subject_type,subject_key,action',
+            (self.workspace_id,)))
+
+    def set_read_scope(self, read_scope: str) -> None:
+        self.connection.execute('UPDATE workspace_access_settings SET read_scope=? WHERE workspace_id=?',
+                                (read_scope, self.workspace_id))
+
+    def upsert_rule(self, record: AccessRuleRecord) -> None:
+        self._check_scope(record.workspace_id, record.branch_id)
+        self.connection.execute('INSERT INTO access_rules VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(workspace_id,branch_id,object_id,subject_type,subject_key,action) DO UPDATE SET effect=excluded.effect', astuple(record))
+
+    def delete_rule(self, record: AccessRuleRecord) -> None:
+        self._check_scope(record.workspace_id, record.branch_id)
+        self.connection.execute('DELETE FROM access_rules WHERE workspace_id=? AND branch_id=? AND object_id=? AND subject_type=? AND subject_key=? AND action=?',
+            (record.workspace_id, record.branch_id, record.object_id, record.subject_type, record.subject_key, record.action))
+
     def insert_rule(self, record: AccessRuleRecord) -> None:
         self._check_scope(record.workspace_id,record.branch_id)
         self.connection.execute('INSERT INTO access_rules VALUES (?,?,?,?,?,?,?,?)', astuple(record))
