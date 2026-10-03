@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from getpass import getpass
 import shlex
 import sys
 from pathlib import Path
@@ -12,6 +13,8 @@ from ..core.errors import ContentError
 from ..core.models import ContentScope
 from ..editor import Editor
 from ..services.content import ContentService
+from ..services.identity import IdentityService
+from ..services.unit_of_work import ApplicationUnitOfWork
 from ..storage import Database
 from ..storage.errors import StorageError
 
@@ -29,8 +32,14 @@ class CLI:
         prompt: Callable[[str], str] = input,
         *,
         editor_factory: Callable = Editor,
+        session_token: str | None,
+        identity: IdentityService | None = None,
+        password_prompt: Callable[[str], str] = getpass,
     ):
-        self.fs = VirtualFileSystem(service, scope)
+        self.fs = VirtualFileSystem(service, scope, session_token=session_token)
+        self.identity = identity or IdentityService(service._uow._database)
+        self.password_prompt = password_prompt
+        user_id = self.identity.current_session(session_token=session_token).user.id if session_token else None
         self.output = output
         self.exit_requested = False
         self.commands_by_name: dict[str, Command] = {}
@@ -41,8 +50,59 @@ class CLI:
             system_command_handler=self._execute_editor_command,
             prompt=prompt,
             editor_factory=editor_factory,
+            user_id=user_id,
+            validate_session=lambda: self.identity.current_session(session_token=self.fs.session_token),
         )
+        self.register(Command("login", "登录账号", "login", self._login))
+        self.register(Command("logout", "退出账号", "logout", self._logout))
         self.context.commands = tuple(self.commands_by_name.values())
+
+    def _login(self, context, args):
+        if args:
+            raise ValueError("用法: login")
+        if context.active_editor is not None:
+            raise ValueError("请先关闭编辑器再切换账号")
+        name = context.prompt("用户名: ")
+        password = self.password_prompt("密码: ")
+        grant = self.identity.login(name, password, source="local")
+        if context.pending_edit is not None and context.pending_edit.user_id != grant.user.id:
+            try:
+                discard = context.prompt("另一用户的旧草稿必须明确放弃，输入 discard 确认: ")
+            except (EOFError, KeyboardInterrupt):
+                self.identity.logout(session_token=grant.session_token)
+                raise
+            if discard.strip().lower() != "discard":
+                self.identity.logout(session_token=grant.session_token)
+                context.output("登录切换已取消，旧草稿已保留。")
+                return
+            context.pending_edit = None
+        old_token = self.fs.session_token
+        self.fs.session_token = grant.session_token
+        context.user_id = grant.user.id
+        if old_token:
+            try:
+                self.identity.logout(session_token=old_token)
+            except ContentError:
+                pass
+        self._ensure_cwd()
+        context.output(f"已登录: {grant.user.login_name}")
+
+    def _logout(self, context, args):
+        if args:
+            raise ValueError("用法: logout")
+        if context.active_editor is not None:
+            raise ValueError("请先关闭编辑器再退出账号")
+        try:
+            if self.fs.session_token:
+                self.identity.logout(session_token=self.fs.session_token)
+        except ContentError:
+            pass
+        finally:
+            self.fs.session_token = None
+            context.user_id = None
+            self.fs.available = False
+            self.fs.cached_path = "未登录"
+        context.output("已退出账号；未保存草稿仍保留在内存。")
 
     def _execute_editor_command(self, line: str) -> None:
         """Dispatch editor ':' commands through the normal CLI command registry."""
@@ -79,14 +139,9 @@ class CLI:
 
     def _ensure_cwd(self) -> None:
         if self.fs.ensure_cwd():
-            self.output("当前目录已删除或移出访问范围，已回到 main 根目录。")
+            self.output("当前目录已删除或失去访问权限，已回到可读祖先目录。")
 
     def execute(self, line: str) -> bool:
-        try:
-            self._ensure_cwd()
-        except ContentError as exc:
-            self.output(content_error_message(exc))
-            return True
         try:
             words = shlex.split(line)
         except ValueError as exc:
@@ -111,8 +166,16 @@ class CLI:
             self.output("编辑器中不能再次执行 edit")
             return True
         try:
+            if name not in ("login", "logout", "help"):
+                if self.context.user_id is None:
+                    self.output("请先 login 登录账号。")
+                    return True
+                self._ensure_cwd()
+                if not self.fs.available:
+                    self.output("无可用内容；可使用 login、logout、help 或 exit。")
+                    return True
             command.handler(self.context, args)
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, EOFError):
             self.output("操作已取消。" + ("未保存正文已保留在当前会话。"
                                       if self.context.pending_edit is not None else ""))
         except ContentError as exc:
@@ -133,9 +196,13 @@ class CLI:
             pass
 
         self.output("C156 CLI 已启动。输入 help 查看命令，输入 exit 退出。")
-        while True:
+        try:
             self._ensure_cwd()
-            prompt = f"c156:{self.fs.display()}$ "
+        except ContentError:
+            self.fs.available = False
+            self.fs.cached_path = "请登录"
+        while True:
+            prompt = f"c156:{self.fs.cached_path}$ "
             try:
                 line = self.context.prompt(prompt)
             except EOFError:
@@ -152,6 +219,9 @@ class CLI:
 
 def content_error_message(error: ContentError) -> str:
     labels = {
+        "unauthenticated": "会话无效，请 login 重新登录",
+        "forbidden": "没有操作权限",
+        "rate_limited": "认证尝试过于频繁",
         "not_found": "路径或对象不存在",
         "not_directory": "不是目录",
         "not_document": "不是文档",
@@ -170,20 +240,30 @@ def default_database_path() -> Path:
     return Path(__file__).resolve().parents[2] / "data" / "c156.sqlite"
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, prompt=input, password_prompt=getpass) -> int:
     parser = argparse.ArgumentParser(description="C156 内容命令行")
     parser.add_argument("--database", type=Path, default=default_database_path())
     args = parser.parse_args(argv)
     try:
-        service = ContentService(Database(args.database))
-        scope = service.default_scope()
+        database = Database(args.database)
+        service = ContentService(database)
+        with ApplicationUnitOfWork(database).transaction() as work:
+            scope = work.default_scope()
+            initialized = bool(work.identity.list_users())
     except (ContentError, StorageError, OSError) as exc:
         print(f"无法启动：数据库缺失、无效或尚未配置 WAL。{exc}", file=sys.stderr)
         database = shlex.quote(str(args.database))
         print(f"新建或完成运行配置：python -m src.storage init --database {database}", file=sys.stderr)
         print(f"导入旧数据或继续迁移配置：python -m src.storage migrate-legacy --source data --database {database}", file=sys.stderr)
         return 1
-    return CLI(service, scope).run()
+    if not initialized:
+        print("尚无账号，请显式执行本机引导：python -m src.identity bootstrap-admin --database " + shlex.quote(str(args.database)) + " --login-name <name> --display-name <name>", file=sys.stderr)
+        return 1
+    cli = CLI(service, scope, session_token=None, prompt=prompt, password_prompt=password_prompt)
+    cli.execute("login")
+    if cli.fs.session_token is None:
+        return 1
+    return cli.run()
 
 
 if __name__ == "__main__":

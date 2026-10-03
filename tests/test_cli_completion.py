@@ -12,8 +12,8 @@ class CLICompletionTests(CLIReadFixture):
         super().setUp()
         self.names = ['space folder', "single'quote", 'double"quote', '.folder', 'money dollar$cash', 'money tick`name']
         for name in self.names:
-            self.service.create_folder(self.scope, self.scope.root_id, name)
-        self.service.create_document(self.scope, self.scope.root_id, 'space document')
+            self.service.create_folder(self.scope, self.scope.root_id, name, session_token=self.token)
+        self.service.create_document(self.scope, self.scope.root_id, 'space document', session_token=self.token)
 
     def complete(self, line, begidx=None):
         if begidx is None:
@@ -65,7 +65,7 @@ class CLICompletionTests(CLIReadFixture):
 
     def test_ideographic_space_stays_inside_one_shell_path_argument(self):
         name = '中文\u3000目录'
-        self.service.create_folder(self.scope, self.scope.root_id, name)
+        self.service.create_folder(self.scope, self.scope.root_id, name, session_token=self.token)
         line = 'cd 中文\u3000目'
         self.assertEqual(shlex.split(line), ['cd', '中文\u3000目'])
         begidx = len('cd ')
@@ -74,3 +74,8 @@ class CLICompletionTests(CLIReadFixture):
                          [['cd', name + '/']])
         self.cli.execute(line[:begidx] + matches[0])
         self.assertEqual(self.cli.fs.display(), '/' + name)
+
+    def test_private_option_preserves_path_completion(self):
+        self.assertEqual(self.complete('mkdir --private pro'), ['products/'])
+        self.assertEqual(self.complete('edit --private pro'), ['products/'])
+        self.assertEqual(self.complete('cd --private pro'), [])

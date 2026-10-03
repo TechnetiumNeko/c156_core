@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-from ..core.errors import NotDirectory, NotFound, NotDocument, PathOutsideRoot
+from ..core.errors import NotDirectory, NotFound, NotDocument, PathOutsideRoot, ContentError, Unauthenticated
 from ..core.paths import parse_path, validate_name
 from ..editor import Editor
 from .paths import VirtualFileSystem
@@ -29,6 +29,7 @@ class PendingEdit:
     title: str
     base_revision_id: str
     content: str
+    user_id: str
 
 
 @dataclass
@@ -41,6 +42,8 @@ class CommandContext:
     prompt: Callable[[str], str] = input
     editor_factory: Callable = Editor
     pending_edit: PendingEdit | None = None
+    user_id: str | None = None
+    validate_session: Callable[[], object] | None = None
 
 
 def _require_args(args: list[str], count: int, usage: str) -> None:
@@ -76,6 +79,7 @@ def command_cd(context: CommandContext, args: list[str]) -> None:
     if target.kind != "folder":
         raise NotDirectory("不是目录", details={"path": args[0]})
     context.fs.cwd_id = target.id
+    context.fs.ensure_cwd()
 
 
 def command_ls(context: CommandContext, args: list[str]) -> None:
@@ -85,7 +89,7 @@ def command_ls(context: CommandContext, args: list[str]) -> None:
     if target.kind != "folder":
         context.output(target.name)
         return
-    entries = context.fs.service.list_children(context.fs.scope, target.id)
+    entries = context.fs.service.list_children(context.fs.scope, target.id, session_token=context.fs.session_token)
     for entry in sorted(entries, key=lambda node: (node.kind != "folder", node.name.lower())):
         context.output(entry.name + ("/" if entry.kind == "folder" else ""))
 
@@ -118,7 +122,7 @@ def command_tree(context: CommandContext, args: list[str]) -> None:
     max_depth = max_depth if max_depth is not None else 2
 
     target = context.fs.resolve(path)
-    items = context.fs.service.list_tree(context.fs.scope, target.id, max_depth=max_depth)
+    items = context.fs.service.list_tree(context.fs.scope, target.id, max_depth=max_depth, session_token=context.fs.session_token)
     last_child = {item.node.parent_id: item.node.id for item in items if item.depth > 0}
     for item in items:
         node = item.node
@@ -132,21 +136,30 @@ def command_tree(context: CommandContext, args: list[str]) -> None:
 def command_cat(context: CommandContext, args: list[str]) -> None:
     _require_args(args, 1, "cat <path>")
     target = context.fs.resolve(args[0])
-    content = context.fs.service.read_document(context.fs.scope, target.id).content
+    content = context.fs.service.read_document(context.fs.scope, target.id, session_token=context.fs.session_token).content
     context.output(content, end="")
     if not content.endswith("\n"):
         context.output("")
 
 
+def private_args(args: list[str], command: str):
+    private = "--private" in args
+    paths = [arg for arg in args if arg != "--private"]
+    if args.count("--private") > 1 or any(arg.startswith("--") for arg in paths):
+        raise ValueError(f"用法: {command} [--private] <path>")
+    _require_args(paths, 1, f"{command} [--private] <path>")
+    return paths[0], "private" if private else "inherit"
+
+
 def command_mkdir(context: CommandContext, args: list[str]) -> None:
-    _require_args(args, 1, "mkdir <path>")
-    parent, name = creation_target(context, args[0])
-    context.fs.service.create_folder(context.fs.scope, parent.id, name)
+    path, visibility = private_args(args, "mkdir")
+    parent, name = creation_target(context, path)
+    context.fs.service.create_folder(context.fs.scope, parent.id, name, visibility=visibility, session_token=context.fs.session_token)
 
 
 def command_edit(context: CommandContext, args: list[str]) -> None:
-    _require_args(args, 1, "edit <path>")
-    path = args[0]
+    path, visibility = private_args(args, "edit")
+    require_pending_owner(context)
     if parse_path(path).trailing_slash:
         raise NotDocument("文档路径不能以 / 结尾")
     try:
@@ -159,6 +172,8 @@ def command_edit(context: CommandContext, args: list[str]) -> None:
         if pending is not None and all(part not in (".", "..") for part in parsed.parts):
             prefix = "/" if parsed.absolute else context.fs.display().rstrip("/") + "/"
             if prefix + "/".join(parsed.parts) == pending.title:
+                if visibility == "private":
+                    raise ValueError("--private 仅用于新建对象")
                 edit_pending(context)
                 return
         # Resolve/validate the parent before asking; this also rejects doc/../leaf.
@@ -173,15 +188,18 @@ def command_edit(context: CommandContext, args: list[str]) -> None:
             return
         if answer not in ("y", "yes"):
             return
-        target = context.fs.service.create_document(context.fs.scope, parent.id, name)
+        target = context.fs.service.create_document(context.fs.scope, parent.id, name, visibility=visibility, session_token=context.fs.session_token)
+    else:
+        if visibility == "private":
+            raise ValueError("--private 仅用于新建对象")
     pending = context.pending_edit
     if pending is not None and pending.object_id == target.id:
         edit_pending(context)
         return
     if pending is not None and not handle_pending(context):
         return
-    document = context.fs.service.read_document(context.fs.scope, target.id)
-    initial = PendingEdit(document.id, document.path, document.revision_id, document.content)
+    document = context.fs.service.read_document(context.fs.scope, target.id, session_token=context.fs.session_token)
+    initial = PendingEdit(document.id, document.path, document.revision_id, document.content, context.user_id)
     edit_pending(context, initial)
 
 
@@ -210,7 +228,13 @@ def pending_choice(context: CommandContext, *, allow_discard=False) -> str:
         return "later"
 
 
+def require_pending_owner(context: CommandContext) -> None:
+    if context.pending_edit is not None and context.pending_edit.user_id != context.user_id:
+        raise ValueError("旧草稿属于另一用户，请先明确 discard 放弃")
+
+
 def view_pending(context: CommandContext) -> None:
+    require_pending_owner(context)
     context.output(context.pending_edit.content)
 
 
@@ -220,10 +244,15 @@ def handle_pending(context: CommandContext) -> bool:
         choice = pending_choice(context, allow_discard=True)
         if choice in ("discard", "放弃"):
             context.pending_edit = None
-        elif choice in ("view", "查看"):
-            view_pending(context)
-        elif choice in ("continue", "继续"):
-            edit_pending(context)
+        elif choice in ("view", "查看", "continue", "继续"):
+            try:
+                if choice in ("view", "查看"):
+                    view_pending(context)
+                else:
+                    edit_pending(context)
+            except (ContentError, ValueError) as exc:
+                context.output(str(exc) + "；草稿已保留，请重新登录或明确 discard。")
+                return False
         else:
             return False
     return True
@@ -231,6 +260,11 @@ def handle_pending(context: CommandContext) -> bool:
 
 def edit_pending(context: CommandContext, initial: PendingEdit | None = None) -> None:
     """Run editors outside transactions; failures retain text and the exact base."""
+    require_pending_owner(context)
+    if context.user_id is None:
+        raise Unauthenticated("请先 login")
+    if context.validate_session is not None:
+        context.validate_session()
     pending = initial if initial is not None else context.pending_edit
     while pending is not None:
         editor = context.editor_factory(pending.object_id, pending.title, pending.content,
@@ -245,7 +279,7 @@ def edit_pending(context: CommandContext, initial: PendingEdit | None = None) ->
                 interrupted = editor.result()
                 if interrupted.changed:
                     context.pending_edit = PendingEdit(pending.object_id, pending.title,
-                                                       pending.base_revision_id, interrupted.content)
+                                                       pending.base_revision_id, interrupted.content, pending.user_id)
             context.output("编辑已取消。" + ("未保存正文已保留在当前会话。"
                                       if context.pending_edit is not None else ""))
             return
@@ -258,18 +292,20 @@ def edit_pending(context: CommandContext, initial: PendingEdit | None = None) ->
                 context.pending_edit = None
             return
         pending = PendingEdit(pending.object_id, pending.title,
-                              pending.base_revision_id, result.content)
+                              pending.base_revision_id, result.content, pending.user_id)
         context.pending_edit = pending
         try:
             context.fs.service.save_document(context.fs.scope, pending.object_id,
                                              pending.content,
-                                             expected_revision_id=pending.base_revision_id)
+                                             expected_revision_id=pending.base_revision_id, session_token=context.fs.session_token)
         except KeyboardInterrupt:
             context.output("保存已取消；未保存正文已保留在当前会话。")
             return
         except Exception as exc:
             # Unknown storage errors must preserve the result just like conflicts.
             context.output(f"保存失败：{exc}；正文仍未保存，已保留。")
+            if isinstance(exc, ContentError) and exc.code in ("unauthenticated", "forbidden"):
+                return
         else:
             context.pending_edit = None
             return
@@ -291,8 +327,8 @@ def built_in_commands() -> list[Command]:
         Command("cd", "切换当前目录", "cd <path>", command_cd, path_argument="required", directories_only=True),
         Command("tree", "以树形显示目录", "tree [path] [-d <max_depth>]", command_tree, path_argument="optional"),
         Command("cat", "显示文本文件内容", "cat <path>", command_cat, path_argument="required"),
-        Command("mkdir", "创建目录", "mkdir <path>", command_mkdir, path_argument="required", directories_only=True),
-        Command("edit", "编辑 document 文档", "edit <path>", command_edit, path_argument="required"),
+        Command("mkdir", "创建目录", "mkdir [--private] <path>", command_mkdir, path_argument="required", directories_only=True),
+        Command("edit", "编辑 document 文档", "edit [--private] <path>", command_edit, path_argument="required"),
         Command("exit", "退出 CLI", "exit", lambda context, args: None),
     ]
 

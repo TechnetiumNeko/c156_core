@@ -87,7 +87,8 @@ class Completer:
         command = self.cli.commands_by_name.get(command_name)
         if command is None or command.path_argument is None or value.startswith('-'):
             return []
-        if len(completed) != 1:
+        options = [token for token, _ in completed[1:]]
+        if options and (command_name not in ("mkdir", "edit") or options != ["--private"]):
             return []
         prefix = line[start:begidx] if start is not None else ''
         candidates = self.cli.fs.completion_candidates(value, directories_only=command.directories_only)
