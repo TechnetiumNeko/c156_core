@@ -60,6 +60,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.send_header('Content-Security-Policy', CSP)
         self.send_header('Cache-Control', 'no-store')
+        self.send_header('X-C156-Instance', self.server.instance_marker)
         if grant is not None or clear_cookie:
             self.send_header('Set-Cookie', session_cookie(grant, clear=clear_cookie, secure=self.server.cookie_secure))
         if retry_after is not None:

@@ -1,5 +1,6 @@
 """Construct and run the local Web entry without initializing storage."""
 import argparse
+import hashlib
 import secrets
 import shlex
 import sys
@@ -18,6 +19,12 @@ from .api import API
 from .http import Handler
 
 
+def instance_marker(scope):
+    """Non-secret opaque marker for this configured library, without public IDs."""
+    configured = '\0'.join((scope.workspace_id, scope.branch_id, scope.root_id))
+    return 'c156-' + hashlib.sha256(configured.encode('utf-8')).hexdigest()
+
+
 def create_server(database_path, port=8000, *, cookie_secure=False):
     if isinstance(port, bool) or not isinstance(port, int) or not 0 <= port <= 65535:
         raise ValueError('port must be an integer from 0 to 65535')
@@ -31,6 +38,7 @@ def create_server(database_path, port=8000, *, cookie_secure=False):
     server = ThreadingHTTPServer(('127.0.0.1', port), Handler)
     server.daemon_threads = True
     server.cookie_secure = cookie_secure
+    server.instance_marker = instance_marker(scope)
     server.api = API(service, scope, secrets.token_urlsafe(32), identity_service=IdentityService(database),
                      accounts=AccountService(database), access=AccessService(database))
     return server

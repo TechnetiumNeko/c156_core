@@ -1,6 +1,6 @@
 # C156 Core
 
-用于共同创作和阅读内容的网站原型。当前实现统一 SQLite 内容内核，CLI 和 HTML／JS 工作台通过同一个 `ContentService` 读写虚拟目录和文档。工作台用于试手和演示架构，采用原生前端与 Python 标准库，无需安装运行依赖或执行前端构建。
+用于共同创作和阅读内容的网站原型。当前实现统一 SQLite 内容内核，CLI 和 HTML／JS 工作台通过同一个 `ContentService` 读写虚拟目录和文档。工作台用于试手和演示架构，采用原生前端与 Python HTTP 标准库；密码散列需要安装 requirements.txt 中固定版本的运行依赖，无需前端构建。
 
 ## 架构边界
 
@@ -16,18 +16,19 @@
           core 规则 + storage 仓储
 ```
 
-账号系统将身份、凭据、会话、成员关系和权限判断作为独立边界：Web 负责 Cookie、CSRF 和登录页面，服务层负责认证与授权，内容服务只接收已经解析的调用者身份。实时协作将更新模型、版本向量和合并规则与房间、同步、Presence、WebSocket 传输分开；稳定正文检查点仍由内容和版本服务保存。当前这些账号、协作和发布模块尚未实现，本文档记录的是后续扩展方向。
+账号系统将身份、凭据、会话、成员关系和权限判断作为独立边界：Web 负责 Cookie、CSRF 和登录页面，服务层负责认证与授权，内容服务接收明确的 session_token，在同一事务内解析身份与授权。实时协作将更新模型、版本向量和合并规则与房间、同步、Presence、WebSocket 传输分开；稳定正文检查点仍由内容和版本服务保存。身份认证、账号管理、成员关系与授权已实现；实时协作和作品发布仍未交付。
 
 ## 快速试用
 
 在仓库根目录运行（已验证 Python 3.13.2）：
 
 ```bash
+python -m pip install -r requirements.txt
 python run_demo.py
 # Linux／macOS 也可运行：./start_demo.sh
 ```
 
-首次自动创建独立的 `.c156/demo.sqlite`，加入示例文档并打开浏览器，默认地址为 <http://127.0.0.1:8000/>。再次启动保留已保存的修改；重复启动会打开已有工作台，端口被其他程序占用时显示实际分配的地址。
+首次在新路径显式初始化独立的 `.c156/demo.sqlite`，提示首管理员登录名、显示名和两次隐藏密码（15–128 个字符），创建站点管理员兼默认工作区 owner。演示通过正常登录取得会话、经授权播种示例后退出；浏览器需要重新登录，不提供默认密码。默认地址为 <http://127.0.0.1:8000/>。再次启动只打开已有库，保留修改且不重新播种。已有库未引导时要求先执行 bootstrap-admin；协议 1 运行库必须改用新路径，不升级或覆盖。重复启动用不含原始 ID 的实例标识确认同一库，端口被其他程序或其他库占用时显示实际分配的地址。
 
 工作台支持目录浏览、新建目录／文档、Markdown 源码／预览／并排查看、保存及 Ctrl／Cmd+S。输入不会自动保存，未保存的草稿仅在当前页面内存中；切换和关闭会提醒，保存冲突时保留草稿供手动合并。
 
@@ -43,18 +44,21 @@ python run_cli.py --database .c156/demo.sqlite
 
 ```bash
 python -m src.storage migrate-legacy --source data --database data/c156.sqlite
+python -m src.identity bootstrap-admin --database data/c156.sqlite --login-name owner --display-name 管理员
 python run_web.py --database data/c156.sqlite --port 8000
 # 等价入口：python -m src.web --database data/c156.sqlite --port 8000
 # 终端入口：python run_cli.py --database data/c156.sqlite
 ```
 
-创建空的新库使用 `python -m src.storage init --database /path/to/new.sqlite`，然后把同一路径传给 CLI 或 Web。原始样本保留不变，迁移不覆盖不匹配的目标。CLI／Web 的默认库为 `data/c156.sqlite`，启动只校验数据库，不自动创建、导入或修复；演示入口的初始化流程与它们分开。所有入口的 `--help` 均不创建数据库。
+创建空的新库使用 `python -m src.storage init --database /path/to/new.sqlite`，再执行同路径的 `python -m src.identity bootstrap-admin --database /path/to/new.sqlite --login-name owner --display-name 管理员`，然后启动 CLI 或 Web 并正常登录。init 和旧容器导入只创建协议 2 内容库，不自动创建账号；bootstrap 只允许空账号且无 owner 的库，密码通过 getpass 输入并确认，不放在命令行。原始样本保留不变，迁移不覆盖不匹配的目标。CLI／Web 的默认库为 `data/c156.sqlite`，启动只校验数据库，不自动创建、导入或修复；演示入口的初始化流程与它们分开。所有入口的 `--help` 均不创建数据库。
 
 ## 当前范围
 
 内核已支持稳定对象 ID、虚拟目录、正文修订、元数据、创建、重命名、移动、软删除、事务与版本冲突检查。CLI 保留原有命令，Web 提供浏览、新建与正文读写。虚拟 `/` 是 `main` 文件夹；`admin`、`resource`、`bin` 为兼容目录，软删除不自动移入 `bin`。
 
-用户认证与权限、实时协作、作品级提交与分支、历史恢复、媒体上传和公开站点部署仍是后续阶段。后续实现应将这些能力放在共用应用服务层，再由 Web 和 CLI 接入。正文修订不等于作品级提交；访问根限制不等于用户授权。
+账号、密码、24 小时会话、站点账号管理、默认工作区成员／角色、继承 ACL、私密与文档冻结已实现。实时协作、作品级提交与分支、历史恢复、媒体上传和公开站点部署仍是后续阶段。后续实现应将这些能力放在共用应用服务层，再由 Web 和 CLI 接入。正文 revision_id 检测正文冲突；entry.version 检测结构和 metadata，workspace_access_settings.version 检测成员／ACL／阅读范围／已有对象私密／冻结配置。工作区 owner 不等于 private 创建者；站点管理员也不会自动获得其他工作区内容权限。默认 read_scope 为 members；可配置 authenticated／everyone 的阅读基线，但所有写操作仍要求有效成员。reader 默认读取，editor 默认读取／编辑／创建／改名／移动／删除，admin／owner 管理工作区授权与内容，owner 可转移所有权；review／publish 仅建模配置，没有发布流程。ACL 按最近对象及 user、role、authenticated、everyone 顺序计算，无法阅读的祖先不会因私密所有权而被跳过。其他人的冻结不会被管理角色静默绕过。
+
+站点管理员创建账号后一次性取得 48 小时激活凭据；重置凭据有效 1 小时，重置和改密会撤销旧会话。凭据应私下交给对应用户，不写日志。CLI 支持 login／logout 和 mkdir／edit --private；网页提供账号与访问管理。草稿绑定原用户：会话失效暂停保存并保留正文和原基础修订，同用户重登继续，换账号须处理旧草稿；草稿仅驻留内存。
 
 ## 开发与文档
 

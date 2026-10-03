@@ -29,6 +29,7 @@ from tests.helpers import (
     PROJECT_ROOT,
     SAMPLE_DOCUMENT_ID,
     TempPathTestCase,
+    seed_test_actors,
     copy_sample_data,
     create_legacy_document,
     legacy_connection,
@@ -56,6 +57,14 @@ class LegacyImportTestCase(TempPathTestCase):
         self.target = self.temp_root / "c156.sqlite"
 
     # -- helpers -----------------------------------------------------------
+
+    def content_token(self, path):
+        database = Database(path)
+        service = ContentService(database)
+        self.assertFalse(service.bootstrap(session_token=None).initialized)
+        with database.transaction() as connection:
+            workspace_id = connection.execute('SELECT id FROM workspaces').fetchone()[0]
+        return seed_test_actors(database, workspace_id)['owner'].session_token
 
     def raw_counts(self, path: Path) -> dict:
         connection = sqlite3.connect(path)
@@ -107,11 +116,12 @@ class SampleImportTests(LegacyImportTestCase):
         self.assertEqual(counts["legacy_imports"], 1)
 
         service = ContentService(Database(self.target))
-        scope = service.default_scope()
-        node = service.resolve_path(scope, "/products/concretecream")
+        token = self.content_token(self.target)
+        scope = service.default_scope(session_token=token)
+        node = service.resolve_path(scope, "/products/concretecream", session_token=token)
         self.assertEqual(node.id, SAMPLE_DOCUMENT_ID)
         self.assertEqual(node.path, "/products/concretecream")
-        document = service.read_document(scope, SAMPLE_DOCUMENT_ID)
+        document = service.read_document(scope, SAMPLE_DOCUMENT_ID, session_token=token)
         self.assertEqual(document.content, LEGACY_SAMPLE_DOCUMENT_CONTENT)
         self.assertEqual(
             hashlib.sha256(document.content.encode("utf-8")).hexdigest(),
@@ -212,11 +222,12 @@ class SampleImportTests(LegacyImportTestCase):
         self.assertEqual(entry["raw_metadata"]["extra"], json.dumps(payload, ensure_ascii=False))
 
         service = ContentService(Database(self.target))
-        scope = service.default_scope()
-        document = service.read_document(scope, SAMPLE_DOCUMENT_ID)
+        token = self.content_token(self.target)
+        scope = service.default_scope(session_token=token)
+        document = service.read_document(scope, SAMPLE_DOCUMENT_ID, session_token=token)
         self.assertEqual(document.content, raw)
         self.assertEqual(
-            service.get_metadata(scope, SAMPLE_DOCUMENT_ID)["extra"], payload
+            service.get_metadata(scope, SAMPLE_DOCUMENT_ID, session_token=token)["extra"], payload
         )
 
     def test_import_reports_and_applies_missing_registration_repair(self) -> None:
@@ -265,17 +276,19 @@ class RepeatImportTests(LegacyImportTestCase):
     def test_repeat_import_preserves_later_edit(self) -> None:
         report = migrate_legacy(self.source, self.target)
         service = ContentService(Database(self.target))
-        scope = service.default_scope()
-        document = service.read_document(scope, SAMPLE_DOCUMENT_ID)
+        token = self.content_token(self.target)
+        scope = service.default_scope(session_token=token)
+        document = service.read_document(scope, SAMPLE_DOCUMENT_ID, session_token=token)
         saved = service.save_document(
             scope,
             document.id,
             "迁移后修改",
             expected_revision_id=document.revision_id,
+            session_token=token,
         )
         counts_before = self.raw_counts(self.target)
         self.assertEqual(migrate_legacy(self.source, self.target), report)
-        self.assertEqual(service.read_document(scope, document.id), saved)
+        self.assertEqual(service.read_document(scope, document.id, session_token=token), saved)
         self.assertEqual(self.raw_counts(self.target), counts_before)
 
     def test_repeat_import_reconfigures_wal_without_content_change(self) -> None:
@@ -379,8 +392,9 @@ class RepeatImportTests(LegacyImportTestCase):
                 target = self.temp_root / f"wrong-revision-{folder}.sqlite"
                 migrate_legacy(self.source, target)
                 service = ContentService(Database(target))
-                scope = service.default_scope()
-                other = service.create_document(scope, scope.root_id, "other", content="body")
+                token = self.content_token(target)
+                scope = service.default_scope(session_token=token)
+                other = service.create_document(scope, scope.root_id, "other", content="body", session_token=token)
                 connection = sqlite3.connect(target, isolation_level=None)
                 try:
                     connection.execute("PRAGMA journal_mode = DELETE")
@@ -417,12 +431,13 @@ class RepeatImportTests(LegacyImportTestCase):
     def test_repeat_import_preserves_legal_edits_metadata_and_soft_deletion(self):
         report = migrate_legacy(self.source, self.target)
         service = ContentService(Database(self.target))
-        scope = service.default_scope()
-        doc = service.read_document(scope, SAMPLE_DOCUMENT_ID)
-        saved = service.save_document(scope, doc.id, "later edit", expected_revision_id=doc.revision_id)
+        token = self.content_token(self.target)
+        scope = service.default_scope(session_token=token)
+        doc = service.read_document(scope, SAMPLE_DOCUMENT_ID, session_token=token)
+        saved = service.save_document(scope, doc.id, "later edit", expected_revision_id=doc.revision_id, session_token=token)
         updated = service.set_metadata(scope, doc.id, {"nested": {"values": [1, None, True]}},
-                                       expected_version=saved.version)
-        service.delete_node(scope, doc.id, expected_version=updated.version)
+                                       expected_version=saved.version, session_token=token)
+        service.delete_node(scope, doc.id, expected_version=updated.version, session_token=token)
         with Database(self.target).management_connection() as connection:
             connection.execute("PRAGMA journal_mode = DELETE")
             before = [tuple(row) for row in connection.execute("SELECT * FROM entries ORDER BY object_id")]
@@ -693,7 +708,8 @@ class OpaqueLegacyIdTests(LegacyImportTestCase):
         before = self.source_hashes()
         report = migrate_legacy(self.source, self.target)
         service = ContentService(Database(self.target))
-        doc = service.read_document(service.default_scope(), opaque_id)
+        token = self.content_token(self.target)
+        doc = service.read_document(service.default_scope(session_token=token), opaque_id, session_token=token)
         self.assertEqual(doc.id, opaque_id)
         self.assertEqual(doc.content, LEGACY_SAMPLE_DOCUMENT_CONTENT)
         self.assertEqual(doc.path, "/products/concretecream")
