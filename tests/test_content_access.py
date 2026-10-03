@@ -135,10 +135,29 @@ class TestContentAccess(TempPathTestCase):
             connection.execute('INSERT INTO access_rules VALUES (?,?,?,?,?,?,?,?)',
                 (self.scope.workspace_id, self.scope.branch_id, self.scope.root_id,
                  'everyone', '', None, 'read', 'deny'))
+        # A corrupt protected sibling must not preempt the unreadable-root gate.
+        with database.transaction(write=True) as connection:
+            connection.execute("UPDATE entries SET deleted_at=? WHERE parent_id=? AND name='admin'",
+                ('2026-01-01T00:00:00+00:00', root.root_id))
         blocked = self.service.bootstrap(session_token=self.reader)
         self.assertIsNotNone(blocked.session)
+        self.assertEqual(blocked.workspace_role, "reader")
+        self.assertEqual(blocked.workspace_access_version, bootstrap.workspace_access_version)
         self.assertIsNone(blocked.root)
         self.hidden(lambda: self.service.default_scope(session_token=self.reader))
+        self.hidden(lambda: self.service.default_scope(session_token=None))
+        self.assertIsNone(self.service.bootstrap(session_token=None).root)
+        from src.core.errors import UnsupportedSchema
+        from src.services.unit_of_work import ApplicationUnitOfWork
+        with self.assertRaises(UnsupportedSchema) as public_error:
+            self.service.default_scope(session_token=self.actors['owner'].session_token)
+        self.assertEqual(dict(public_error.exception.details), {})
+        self.assertEqual(public_error.exception.__cause__.details['name'], 'admin')
+        with ApplicationUnitOfWork(database).transaction() as work:
+            with self.assertRaises(UnsupportedSchema) as internal_error:
+                work.default_scope()
+            self.assertEqual(internal_error.exception.details['name'], 'admin')
+
 
     def test_freeze_capabilities_require_member_creator_edit_and_lock_authority(self):
         f = self.fixture

@@ -11,7 +11,7 @@ from ..identity.tokens import token_digest
 from ..core.models import ContentScope
 from ..storage.database import Database
 from ..storage.errors import BusyError, ConstraintError, SchemaError
-from ..storage.repository import Repository, is_sibling_name_conflict
+from ..storage.repository import Repository, is_sibling_name_conflict, lookup_default_main
 from ..storage.management import validate_default_tree
 from ..storage.identity_repository import IdentityRepository
 from ..storage.access_repository import AccessRepository
@@ -79,6 +79,18 @@ class _ApplicationTransaction:
         return ContentOperations(Repository(self._connection,
             workspace_id=scope.workspace_id, branch_id=scope.branch_id),
             policy=self.policy(scope, principal))
+
+    def configured_scope(self) -> ContentScope:
+        """Locate the fixed display root without validating sibling contents."""
+        self._require_active()
+        from ..core.errors import NotFound
+        workspace_id, branch_id = lookup_default_main(self._connection)
+        repo = Repository(self._connection, workspace_id=workspace_id, branch_id=branch_id)
+        root_id = repo.get_branch_root_id()
+        main = repo.find_child(root_id, "main") if root_id else None
+        if main is None:
+            raise NotFound("Object not found")
+        return ContentScope(workspace_id, branch_id, main.object_id)
 
     def default_scope(self) -> ContentScope:
         self._require_active()

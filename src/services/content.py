@@ -29,11 +29,30 @@ class ContentService:
     def _write(self):
         return self._uow.transaction(write=True)
 
+    @staticmethod
+    def _configured_scope(work):
+        from ..core.errors import UnsupportedSchema
+        try:
+            return work.configured_scope()
+        except UnsupportedSchema as exc:
+            raise UnsupportedSchema(exc.message) from exc
+
+    @staticmethod
+    def _validate_public_default(work):
+        from ..core.errors import UnsupportedSchema
+        try:
+            work.default_scope()
+        except UnsupportedSchema as exc:
+            # Sibling names and the real branch root are outside display scope.
+            # The original diagnostic remains available as the local cause.
+            raise UnsupportedSchema(exc.message) from exc
+
     def default_scope(self, *, session_token: str | None) -> ContentScope:
         with self._uow.transaction() as work:
             principal = work.resolve_principal(session_token)
-            scope = work.default_scope()
+            scope = self._configured_scope(work)
             work.authorized_content(scope, principal).get_node(scope, scope.root_id)
+            self._validate_public_default(work)
             return scope
 
     def get_node(self, scope: ContentScope, object_id: str, *, session_token: str | None) -> NodeSnapshot:
@@ -240,10 +259,12 @@ class ContentService:
             session = work.identity.get_session(token_digest(session_token))
             session_view = SessionView(user_view(work.identity.get_user(principal.user_id)),
                 session.csrf_token, session.expires_at)
-            scope = work.default_scope()
+            scope = self._configured_scope(work)
             operations = work.authorized_content(scope, principal)
             try:
-                root = NodeAccessView(operations.get_node(scope, scope.root_id),
+                node = operations.get_node(scope, scope.root_id)
+                self._validate_public_default(work)
+                root = NodeAccessView(node,
                     self._access_view(operations, scope, scope.root_id))
             except NotFound:
                 root = None
