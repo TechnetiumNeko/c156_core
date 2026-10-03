@@ -216,3 +216,30 @@ class AccessService:
 
     def remove_rule(self, scope, rule, *, session_token, expected_version):
         return self._rule_change(scope, rule, session_token=session_token, expected_version=expected_version, remove=True)
+
+    def set_visibility(self, scope, object_id, visibility, *, session_token, expected_version):
+        from ..storage.access_repository import PrivacyRecord
+        with self._uow.transaction(write=True) as work:
+            actor, member, repo, settings = self._manager(work, scope, session_token, expected_version)
+            work.authorized_content(scope, actor).get_entry(scope, object_id)
+            if visibility not in ('inherit', 'private'):
+                raise InvalidArgument('invalid visibility')
+            old = repo.get_privacy(object_id)
+            if (old is not None) != (visibility == 'private'):
+                ownership = repo.get_ownership(object_id)
+                owner = ownership.creator_id if ownership and ownership.creator_id else actor.user_id
+                before = {'visibility': 'private' if old else 'inherit',
+                          'private_owner_id': old.owner_id if old else None, 'version': settings.version}
+                if visibility == 'private':
+                    repo.insert_privacy(PrivacyRecord(scope.workspace_id, scope.branch_id,
+                        object_id, owner, work.now.isoformat()))
+                else:
+                    repo.delete_privacy(object_id)
+                if not repo.update_settings(expected_version=settings.version):
+                    raise Conflict('workspace authorization changed')
+                after = {'visibility': visibility, 'private_owner_id': owner if visibility == 'private' else None,
+                         'version': settings.version + 1}
+                work.audit.append(AuditEventRecord(str(uuid4()), actor.user_id, scope.workspace_id,
+                    'access.set_visibility', 'object', object_id, json.dumps(before, sort_keys=True),
+                    json.dumps(after, sort_keys=True), work.now.isoformat()))
+            return self._object(work, scope, actor, member, repo, object_id)

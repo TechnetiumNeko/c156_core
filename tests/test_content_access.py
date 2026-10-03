@@ -182,3 +182,236 @@ class TestContentAccess(TempPathTestCase):
             session_token=self.actors['owner'].session_token)
         self.assertTrue(owner.can_unfreeze)
         self.assertNotIn('edit', owner.actions)
+
+class TestContentWriteAccess(TempPathTestCase):
+    """Real write boundaries; policy permutations live in policy tests."""
+
+    hidden = TestContentAccess.hidden
+
+    def setUp(self):
+        super().setUp()
+        self.fixture = seed_content_read_fixture(self.temp_path())
+        self.actors = seed_test_actors(self.fixture.database, self.fixture.workspace_id)
+        self.service = ContentService(self.fixture.database)
+        self.scope = self.fixture.main_scope
+        self.reader = self.actors["reader"].session_token
+        from src.services.access import AccessService
+        self.access = AccessService(self.fixture.database)
+        self.owner = self.actors['owner'].session_token
+        self.editor = self.actors['editor'].session_token
+
+    def version(self):
+        return self.access.workspace_access(self.scope, session_token=self.owner).version
+
+    def put(self, object_id, action, effect, actor='reader'):
+        from src.access.models import AccessRule
+        return self.access.put_rule(self.scope, AccessRule(object_id, 'user',
+            self.actors[actor].user_id, action, effect), session_token=self.owner,
+            expected_version=self.version())
+
+    def test_private_creation_reader_exception_and_parent_gate(self):
+        from src.core.errors import Forbidden
+        from src.storage.access_repository import AccessRepository
+        f = self.fixture
+        self.put(f.products_id, 'create', 'allow')
+        version = self.version()
+        public = self.service.create_folder(self.scope, f.products_id, 'reader-created',
+            session_token=self.reader)
+        self.assertEqual(self.version(), version)
+        with self.assertRaises(Forbidden):
+            self.service.create_document(self.scope, f.products_id, 'reader-private',
+                visibility='private', session_token=self.reader)
+        private = self.service.create_document(self.scope, f.products_id, 'editor-private',
+            content='private body', visibility='private', session_token=self.editor)
+        self.assertEqual(private.content, 'private body')
+        self.assertEqual(self.version(), version + 1)
+        view = self.service.describe_access(self.scope, private.id, session_token=self.editor)
+        self.assertEqual(view.visibility, 'private')
+        self.assertEqual(view.version, version + 1)
+        self.assertTrue(view.can_freeze)
+        saved = self.service.save_document(self.scope, private.id, 'updated private body',
+            expected_revision_id=private.revision_id, session_token=self.editor)
+        self.service.set_metadata(self.scope, private.id, {'label': 'draft'},
+            expected_version=saved.version, session_token=self.editor)
+        self.assertEqual(self.service.describe_access(self.scope, private.id,
+            session_token=self.editor).visibility, 'private')
+        self.hidden(lambda: self.service.read_document(self.scope, private.id, session_token=self.reader))
+        with f.database.transaction() as connection:
+            repo = AccessRepository(connection, workspace_id=self.scope.workspace_id, branch_id=self.scope.branch_id)
+            self.assertEqual(repo.get_ownership(public.id).creator_id, self.actors['reader'].user_id)
+            self.assertEqual(repo.get_ownership(private.id).creator_id, self.actors['editor'].user_id)
+            self.assertEqual(repo.get_privacy(private.id).owner_id, self.actors['editor'].user_id)
+            event = connection.execute('SELECT actor_id,after_json FROM audit_events WHERE target_id=?',
+                (private.id,)).fetchone()
+            self.assertEqual(event['actor_id'], self.actors['editor'].user_id)
+            self.assertNotIn('private body', event['after_json'])
+        self.put(f.products_id, 'read', 'deny', actor='editor')
+        self.hidden(lambda: self.service.create_document(self.scope, f.products_id, 'blocked',
+            visibility='private', session_token=self.editor))
+        with self.assertRaises(TypeError):
+            self.service.create_folder(self.scope, f.main_id, 'no-token')
+        with self.assertRaises(Unauthenticated):
+            self.service.create_folder(self.scope, f.main_id, 'guest', session_token=None)
+
+    def test_private_audit_failure_rolls_back_all_creation_state(self):
+        from unittest.mock import patch
+        from src.storage.audit_repository import AuditRepository
+        from tests.helpers import entry_state
+        def counts():
+            with self.fixture.database.transaction() as connection:
+                return {table: connection.execute('SELECT count(*) FROM ' + table).fetchone()[0]
+                    for table in ('objects', 'entries', 'document_revisions', 'content_ownership',
+                                  'content_privacy', 'audit_events')}
+        before, parent, version = counts(), entry_state(self.fixture.path, self.fixture.products_id), self.version()
+        append = AuditRepository.append
+        def fail(repo, event):
+            append(repo, event)
+            raise RuntimeError('audit failure')
+        for method in ('create_folder', 'create_document'):
+            with patch.object(AuditRepository, 'append', fail):
+                with self.assertRaises(RuntimeError):
+                    getattr(self.service, method)(self.scope, self.fixture.products_id, 'rollback',
+                        visibility='private', session_token=self.editor)
+            self.assertEqual(counts(), before)
+            self.assertEqual(entry_state(self.fixture.path, self.fixture.products_id), parent)
+            self.assertEqual(self.version(), version)
+
+        with patch.object(AuditRepository, 'append', fail):
+            with self.assertRaises(RuntimeError):
+                self.access.set_visibility(self.scope, self.fixture.products_id, 'private',
+                    session_token=self.owner, expected_version=version)
+        self.assertEqual(counts(), before)
+        self.assertEqual(self.version(), version)
+
+    def test_visibility_original_creator_retention_and_independent_child(self):
+        from src.core.errors import Conflict, Forbidden
+        from src.services.accounts import AccountService
+        # Use a fixed single-workspace database for the real account lifecycle service.
+        from types import SimpleNamespace
+        from src.storage import Database
+        from src.storage.management import initialize_database
+        from src.services.access import AccessService
+        path = self.temp_path('retention.sqlite')
+        initialize_database(path)
+        database = Database(path)
+        with database.transaction() as connection:
+            workspace = connection.execute('SELECT id FROM workspaces').fetchone()[0]
+        self.actors = seed_test_actors(database, workspace)
+        self.owner, self.editor, self.reader = (self.actors[role].session_token
+            for role in ('owner', 'editor', 'reader'))
+        self.service, self.access = ContentService(database), AccessService(database)
+        self.scope = self.service.default_scope(session_token=self.owner)
+        self.fixture = SimpleNamespace(database=database, path=path, products_id=self.scope.root_id)
+        parent = self.service.create_folder(self.scope, self.scope.root_id, 'personal',
+            visibility='private', session_token=self.editor)
+        child = self.service.create_document(self.scope, parent.id, 'child', visibility='private',
+            session_token=self.editor)
+        stale = self.version() - 1
+        with self.assertRaises(Conflict):
+            self.access.set_visibility(self.scope, parent.id, 'private', session_token=self.owner,
+                expected_version=stale)
+        with self.assertRaises(Forbidden):
+            self.access.set_visibility(self.scope, parent.id, 'inherit', session_token=self.editor,
+                expected_version=self.version())
+        before = self.version()
+        same = self.access.set_visibility(self.scope, parent.id, 'private', session_token=self.owner,
+            expected_version=before)
+        self.assertEqual(same.version, before)
+        restored = self.access.set_visibility(self.scope, parent.id, 'inherit', session_token=self.owner,
+            expected_version=before)
+        self.assertEqual(restored.version, before + 1)
+        self.service.get_node(self.scope, parent.id, session_token=self.reader)
+        self.hidden(lambda: self.service.get_node(self.scope, child.id, session_token=self.reader))
+        private_again = self.access.set_visibility(self.scope, parent.id, 'private', session_token=self.owner,
+            expected_version=self.version())
+        self.assertEqual(private_again.private_owner_id, self.actors['editor'].user_id)
+        self.access.remove_member(self.scope, self.actors['editor'].user_id, session_token=self.owner,
+            expected_version=self.version())
+        self.hidden(lambda: self.service.get_node(self.scope, parent.id, session_token=self.editor))
+        account = AccountService(self.fixture.database)
+        editor_user = next(u for u in account.list_users(session_token=self.owner)
+                           if u.id == self.actors['editor'].user_id)
+        account.disable_user(editor_user.id, session_token=self.owner, expected_version=editor_user.version)
+        self.hidden(lambda: self.service.get_node(self.scope, parent.id, session_token=self.reader))
+        unchanged = self.access.object_access(self.scope, parent.id, session_token=self.owner)
+        self.assertEqual(unchanged.private_owner_id, self.actors['editor'].user_id)
+        self.assertEqual(self.access.object_access(self.scope, child.id, session_token=self.owner).visibility, 'private')
+        # Legacy/imported NULL creator uses this administrator without changing ownership.
+        fallback = self.access.set_visibility(self.scope, self.fixture.products_id, 'private',
+            session_token=self.owner, expected_version=self.version())
+        self.assertEqual(fallback.private_owner_id, self.actors['owner'].user_id)
+        with self.fixture.database.transaction() as connection:
+            self.assertIsNone(connection.execute('SELECT creator_id FROM content_ownership WHERE object_id=?',
+                (self.fixture.products_id,)).fetchone()[0])
+
+    def test_edit_revocation_locks_and_reserved_metadata(self):
+        from src.core.errors import Forbidden, Frozen, InvalidArgument
+        from tests.helpers import entry_state, revision_state
+        f = self.fixture
+        doc = self.service.read_document(self.scope, f.concretecream_id, session_token=self.editor)
+        before = revision_state(f.path, doc.id)
+        self.put(doc.id, 'edit', 'deny', actor='editor')
+        with self.assertRaises(Forbidden):
+            self.service.save_document(self.scope, doc.id, 'revoked',
+                expected_revision_id=doc.revision_id, session_token=self.editor)
+        with self.assertRaises(Forbidden):
+            self.service.set_metadata(self.scope, doc.id, {}, expected_version=doc.version,
+                session_token=self.editor)
+        self.assertEqual(revision_state(f.path, doc.id), before)
+        with f.database.transaction(write=True) as connection:
+            connection.execute('INSERT INTO content_locks VALUES (?,?,?,?,?)',
+                (self.scope.workspace_id, self.scope.branch_id, doc.id, self.actors['editor'].user_id,
+                 datetime.now(timezone.utc).isoformat()))
+        # Own lock cannot compensate for revoked normal rights.
+        with self.assertRaises(Forbidden):
+            self.service.save_document(self.scope, doc.id, doc.content,
+                expected_revision_id=doc.revision_id, session_token=self.editor)
+        for method, args, kwargs in (
+                ('save_document', (doc.content,), {'expected_revision_id': doc.revision_id}),
+                ('set_metadata', ({},), {'expected_version': doc.version})):
+            with self.assertRaises(Frozen):
+                getattr(self.service, method)(self.scope, doc.id, *args, session_token=self.owner, **kwargs)
+        state = entry_state(f.path, doc.id)
+        for key in ('acl', 'access_rules', 'visibility', 'private_owner_id', 'creator_id', 'locked_by'):
+            with self.assertRaises(InvalidArgument):
+                self.service.set_metadata(self.scope, doc.id, {key: None},
+                    expected_version=doc.version, session_token=self.owner)
+        self.assertEqual(entry_state(f.path, doc.id), state)
+        from src.access.models import AccessRule
+        self.access.remove_rule(self.scope, AccessRule(doc.id, 'user', self.actors['editor'].user_id,
+            'edit', 'deny'), session_token=self.owner, expected_version=self.version())
+        saved = self.service.save_document(self.scope, doc.id, 'own lock edit',
+            expected_revision_id=doc.revision_id, session_token=self.editor)
+        self.assertEqual(saved.content, 'own lock edit')
+
+    def test_site_admin_nonmember_and_hidden_collision(self):
+        from src.core.errors import AlreadyExists, Forbidden
+        f = self.fixture
+        private = self.service.create_folder(self.scope, f.products_id, 'hidden-sibling',
+            visibility='private', session_token=self.editor)
+        self.put(f.products_id, 'create', 'allow')
+        with self.assertRaises(AlreadyExists) as caught:
+            self.service.create_document(self.scope, f.products_id, 'hidden-sibling', session_token=self.reader)
+        self.assertEqual(dict(caught.exception.details), {})
+        self.assertNotIn('hidden-sibling', str(caught.exception))
+        self.assertNotIn(private.id, str(caught.exception))
+        # A site administrator without membership follows the public read baseline only.
+        self.access.set_read_scope(self.scope, 'everyone', session_token=self.owner,
+            expected_version=self.version())
+        with f.database.transaction(write=True) as connection:
+            connection.execute('UPDATE users SET site_admin=1 WHERE id=?', (self.actors['reader'].user_id,))
+        self.access.remove_member(self.scope, self.actors['reader'].user_id, session_token=self.owner,
+            expected_version=self.version())
+        self.service.get_node(self.scope, f.products_id, session_token=self.reader)
+        self.hidden(lambda: self.service.get_node(self.scope, private.id, session_token=self.reader))
+        with self.assertRaises(Forbidden):
+            self.service.create_folder(self.scope, f.products_id, 'nonmember-write', session_token=self.reader)
+        with self.assertRaises(Forbidden):
+            self.service.save_document(self.scope, f.concretecream_id, 'nonmember edit',
+                expected_revision_id=f.concretecream_revision_id, session_token=self.reader)
+        with self.assertRaises(Forbidden):
+            self.service.set_metadata(self.scope, f.concretecream_id, {}, expected_version=1,
+                session_token=self.reader)
+        self.access.set_read_scope(self.scope, 'members', session_token=self.owner,
+            expected_version=self.version())
+        self.hidden(lambda: self.service.get_node(self.scope, f.products_id, session_token=self.reader))

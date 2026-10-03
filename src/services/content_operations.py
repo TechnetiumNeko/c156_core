@@ -848,9 +848,11 @@ class ContentOperations:
         )
 
 
-    @staticmethod
-    def _reject_active_sibling(repo: Repository, parent_id: str, name: str) -> None:
-        if repo.find_child(parent_id, name) is not None:
+    def _reject_active_sibling(self, repo: Repository, parent_id: str, name: str) -> None:
+        sibling = repo.find_child(parent_id, name)
+        if sibling is not None and not self._visible(sibling.object_id):
+            raise AlreadyExists("name is unavailable")
+        if sibling is not None:
             raise AlreadyExists(
                 "an active sibling already uses this name",
                 details={"parent_id": parent_id, "name": name},
@@ -918,6 +920,14 @@ class ContentOperations:
             )
         return entry
 
+
+    def require_write(self, scope, object_id, action, *, unfrozen=False):
+        entry = self.get_entry(scope, object_id)
+        if action == 'create' and entry.kind != 'folder':
+            raise NotDirectory('Object is not a directory')
+        self._policy.require_action(self.ancestor_chain(object_id), action)
+        if unfrozen:
+            self._policy.require_unfrozen((entry,), operation=action)
 
     def _authorize(self, object_id, *, scope=None):
         if self._policy is None:

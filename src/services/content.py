@@ -1,11 +1,8 @@
-"""Application content facade; every public read resolves explicit identity.
-
-Write authorization is integrated in the following approved tasks.
-"""
+"""Application content facade with transaction-scoped identity and authorization."""
 from __future__ import annotations
 
 import json
-from ..core.errors import InvalidArgument
+from ..core.errors import InvalidArgument, Unauthenticated, Forbidden, Conflict
 from ..core.json_values import thaw_json, validate_metadata
 from ..core.paths import parse_path, validate_name
 from .content_operations import ContentOperations
@@ -89,34 +86,73 @@ class ContentService:
         with self._read() as work:
             return work.authorized_content(scope, work.resolve_principal(session_token)).get_metadata(scope, object_id)
 
-    def create_folder(self, scope: ContentScope, parent_id: str, name: str) -> NodeSnapshot:
+    def create_folder(self, scope: ContentScope, parent_id: str, name: str, *, visibility: str='inherit', session_token: str | None) -> NodeSnapshot:
         self._require_str(parent_id, "parent_id")
         validate_name(name)
-        with self._uow.name_conflicts({"parent_id": parent_id, "name": name}):
+        with self._uow.name_conflicts({}):
             with self._write() as work:
-                return work.content(scope).create_folder(scope, parent_id, name)
+                return self._create(work, scope, parent_id, name, visibility, session_token, document=False)
 
-    def create_document(self, scope: ContentScope, parent_id: str, name: str, *, content: str='') -> DocumentSnapshot:
+    def create_document(self, scope: ContentScope, parent_id: str, name: str, *, content: str='', visibility: str='inherit', session_token: str | None) -> DocumentSnapshot:
         self._require_str(parent_id, "parent_id")
         validate_name(name)
         self._require_str(content, "content")
-        with self._uow.name_conflicts({"parent_id": parent_id, "name": name}):
+        with self._uow.name_conflicts({}):
             with self._write() as work:
-                return work.content(scope).create_document(scope, parent_id, name, content=content)
+                return self._create(work, scope, parent_id, name, visibility, session_token, document=True, content=content)
+
+    @staticmethod
+    def _writer(work, scope, token):
+        actor = work.resolve_principal(token)
+        if actor.user_id is None:
+            raise Unauthenticated('authentication required')
+        return work.authorized_content(scope, actor), actor
+
+    def _create(self, work, scope, parent_id, name, visibility, token, *, document, content=''):
+        from uuid import uuid4
+        from ..storage.access_repository import OwnershipRecord, PrivacyRecord
+        from ..storage.audit_repository import AuditEventRecord
+        operations, actor = self._writer(work, scope, token)
+        operations.require_write(scope, parent_id, 'create')
+        if visibility not in ('inherit', 'private'):
+            raise InvalidArgument('invalid visibility')
+        if visibility == 'private' and operations._policy.role not in ('editor', 'admin', 'owner'):
+            raise Forbidden('private creation requires editor role')
+        node = (operations.create_document(scope, parent_id, name, content=content)
+                if document else operations.create_folder(scope, parent_id, name))
+        repo = work.access(scope)
+        repo.insert_ownership(OwnershipRecord(scope.workspace_id, node.id, actor.user_id))
+        version = repo.get_settings().version
+        if visibility == 'private':
+            repo.insert_privacy(PrivacyRecord(scope.workspace_id, scope.branch_id, node.id,
+                actor.user_id, work.now.isoformat()))
+            if not repo.update_settings(expected_version=version):
+                raise Conflict('workspace authorization changed')
+        state = {'visibility': visibility, 'creator_id': actor.user_id,
+                 'private_owner_id': actor.user_id if visibility == 'private' else None,
+                 'version': repo.get_settings().version}
+        work.audit.append(AuditEventRecord(str(uuid4()), actor.user_id, scope.workspace_id,
+            'content.create', 'object', node.id, None, json.dumps(state, sort_keys=True),
+            work.now.isoformat()))
+        refreshed = work.authorized_content(scope, actor)
+        return (refreshed.read_document(scope, node.id) if document
+                else refreshed.get_node(scope, node.id))
 
     def read_document(self, scope: ContentScope, object_id: str, *, session_token: str | None) -> DocumentSnapshot:
         self._require_str(object_id, "object_id")
         with self._read() as work:
             return work.authorized_content(scope, work.resolve_principal(session_token)).read_document(scope, object_id)
 
-    def save_document(self, scope: ContentScope, object_id: str, content: str, *, expected_revision_id: str) -> DocumentSnapshot:
+    def save_document(self, scope: ContentScope, object_id: str, content: str, *, expected_revision_id: str, session_token: str | None) -> DocumentSnapshot:
         self._require_str(object_id, "object_id")
         self._require_str(content, "content")
         self._require_str(expected_revision_id, "expected_revision_id")
         with self._write() as work:
-            return work.content(scope).save_document(scope, object_id, content, expected_revision_id=expected_revision_id)
+            operations, _ = self._writer(work, scope, session_token)
+            operations.require_write(scope, object_id, 'edit', unfrozen=True)
+            return operations.save_document(scope, object_id, content, expected_revision_id=expected_revision_id)
 
-    def set_metadata(self, scope: ContentScope, object_id: str, changes: dict, *, expected_version: int) -> NodeSnapshot:
+    def set_metadata(self, scope: ContentScope, object_id: str, changes: dict, *, expected_version: int, session_token: str | None) -> NodeSnapshot:
         self._require_str(object_id, "object_id")
         self._require_positive_version(expected_version)
         validate_metadata(changes)
@@ -128,7 +164,9 @@ class ContentService:
         except (TypeError, ValueError, RecursionError) as exc:
             raise InvalidArgument("metadata is not JSON serialisable") from exc
         with self._write() as work:
-            return work.content(scope).set_metadata(scope, object_id, changes, expected_version=expected_version)
+            operations, _ = self._writer(work, scope, session_token)
+            operations.require_write(scope, object_id, 'edit', unfrozen=True)
+            return operations.set_metadata(scope, object_id, changes, expected_version=expected_version)
 
     def rename_node(self, scope: ContentScope, object_id: str, name: str, *, expected_version: int) -> NodeSnapshot:
         self._require_str(object_id, "object_id")
