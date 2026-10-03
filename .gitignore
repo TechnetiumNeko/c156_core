@@ -45,3 +45,6 @@ dist/
 # Operating system files
 .DS_Store
 Thumbs.db
+
+# Isolated feature workspaces
+/.worktrees/
