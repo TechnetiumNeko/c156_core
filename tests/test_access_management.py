@@ -158,8 +158,27 @@ class AccessManagementTests(TempPathTestCase):
             self.access.transfer_ownership(self.scope, invited.user.id, session_token=self.token, expected_version=self.version())
         with self.assertRaises(InvalidArgument):
             self.access.put_rule(self.scope, AccessRule(self.scope.root_id,'everyone','','edit','allow'), session_token=self.token, expected_version=self.version())
-        with self.db.transaction(write=True) as connection:
-            connection.execute("UPDATE users SET status='reset_required' WHERE id=?", (target.id,))
+        rule = AccessRule(self.scope.root_id, 'user', target.id, 'read', 'deny')
+        for status in ('reset_required', 'disabled'):
+            self.access.put_rule(self.scope, rule, session_token=self.token, expected_version=self.version())
+            if status == 'reset_required':
+                reset = self.accounts.reset_user(target.id, session_token=self.token, expected_version=target.version)
+            else:
+                self.accounts.disable_user(target.id, session_token=self.token, expected_version=target.version)
+            version = self.version()
+            with self.assertRaises(InvalidArgument):
+                self.access.put_rule(self.scope, rule, session_token=self.token, expected_version=version)
+            removed = self.access.remove_rule(self.scope, rule, session_token=self.token, expected_version=version)
+            self.assertEqual((removed.rules, removed.version), ((), version+1))
+            with self.db.transaction() as connection:
+                event = connection.execute("SELECT before_json,after_json FROM audit_events WHERE event_type='access.remove_rule' ORDER BY rowid DESC LIMIT 1").fetchone()
+                before, after = json.loads(event[0]), json.loads(event[1])
+                self.assertEqual(before['rules'][0]['subject_user_id'], target.id)
+                self.assertEqual(after['rules'], [])
+                self.assertEqual(after['settings']['version'], version+1)
+            if status == 'reset_required':
+                target = self.identity.reset_password(reset.token, PASSWORD, source='local')
+        # Disabled targets remain ineligible for ownership transfer.
         with self.assertRaises(InvalidArgument):
             self.access.transfer_ownership(self.scope, target.id, session_token=self.token, expected_version=self.version())
         version = self.version()

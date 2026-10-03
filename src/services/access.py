@@ -190,9 +190,11 @@ class AccessService:
             elif rule.subject_type in ('authenticated', 'everyone'):
                 valid = rule.subject_key == '' and rule.action == 'read'
             elif rule.subject_type == 'user':
-                user = work.identity.get_user(rule.subject_key)
-                target = repo.get_membership(rule.subject_key)
-                valid = user is not None and user.status == 'active' and target is not None and target.status == 'active'
+                valid = isinstance(rule.subject_key, str) and bool(rule.subject_key)
+                if valid and not remove:
+                    user = work.identity.get_user(rule.subject_key)
+                    target = repo.get_membership(rule.subject_key)
+                    valid = user is not None and user.status == 'active' and target is not None and target.status == 'active'
             else:
                 valid = False
             if not valid:
