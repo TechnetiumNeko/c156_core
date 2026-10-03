@@ -148,6 +148,9 @@ class SampleImportTests(LegacyImportTestCase):
         }
         order_by_id = {item.id: item.position for item in scan.objects}
         with Database(self.target).transaction() as connection:
+            self.assertEqual(connection.execute('SELECT COUNT(*) FROM users').fetchone()[0], 0)
+            self.assertEqual(connection.execute('SELECT read_scope,version FROM workspace_access_settings').fetchone()[:], ('members', 1))
+            self.assertEqual(connection.execute('SELECT COUNT(*) FROM content_ownership WHERE creator_id IS NULL').fetchone()[0], len(scan.objects))
             rows = {
                 row["object_id"]: row
                 for row in connection.execute(

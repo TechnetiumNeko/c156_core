@@ -135,7 +135,7 @@ class TestConnectionBoundaries(TempPathTestCase):
                 str(connection.execute("PRAGMA journal_mode").fetchone()[0]).lower(),
                 "delete",
             )
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 1)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 2)
         self.assertEqual(path.read_bytes(), before)
 
     def test_configure_runtime_enables_wal(self):
@@ -159,7 +159,7 @@ class TestConnectionBoundaries(TempPathTestCase):
             connection.execute("BEGIN IMMEDIATE")
             create_schema(connection)
             self.assertEqual(
-                connection.execute("PRAGMA user_version").fetchone()[0], 1
+                connection.execute("PRAGMA user_version").fetchone()[0], 2
             )
             connection.execute("COMMIT")
 
