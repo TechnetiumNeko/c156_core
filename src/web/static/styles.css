@@ -394,3 +394,13 @@ dialog input {
     padding: 18px;
   }
 }
+/* Account and authorization controls use the existing workbench palette. */
+#account-panel, #access-panel { padding: 8px; overflow-wrap: anywhere; }
+#account-panel form, #access-panel form { display: grid; gap: 6px; margin: 12px 0; }
+#account-panel label, #access-panel label { display: grid; gap: 4px; }
+#account-panel input, #access-panel input, select { min-width: 0; max-width: 100%; padding: 6px; font: inherit; }
+#account-panel section, #access-panel section { border-top: 1px solid #ddd; margin-top: 10px; }
+#account-panel button, #access-panel button { margin: 3px; }
+#account-panel pre, #access-panel pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+#identity-gate { padding: 16px; background: #fff2d6; }
+#access-status { font-size: 12px; overflow-wrap: anywhere; }

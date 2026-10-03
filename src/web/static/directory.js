@@ -1,11 +1,12 @@
 // 目录的缓存、展开状态和 DOM 都在这里；打开文档交给 app.js。
 export class DirectoryTree {
-  constructor({ client, treeElement, folderLabel, onOpenDocument, onError }) {
+  constructor({ client, treeElement, folderLabel, onOpenDocument, onError, onSelectFolder }) {
     this.client = client;
     this.treeElement = treeElement;
     this.folderLabel = folderLabel;
     this.onOpenDocument = onOpenDocument;
     this.onError = onError;
+    this.onSelectFolder = onSelectFolder;
 
     this.root = null;
     this.nodes = new Map(); // 对象 ID → 服务返回的快照
@@ -13,6 +14,11 @@ export class DirectoryTree {
     this.expanded = new Set();
     this.selectedFolderId = null;
     this.selectedDocumentId = null;
+  }
+
+  clear() {
+    this.root = null; this.nodes.clear(); this.children.clear(); this.expanded.clear();
+    this.selectedFolderId = null; this.selectedDocumentId = null; this.render();
   }
 
   setRoot(root) {
@@ -25,7 +31,9 @@ export class DirectoryTree {
   }
 
   async loadChildren(folderId) {
+    const epoch = this.client.epoch;
     const { nodes } = await this.client.listChildren(folderId);
+    if (epoch !== this.client.epoch) return;
     this.children.set(
       folderId,
       nodes.map((node) => node.id),
@@ -36,6 +44,7 @@ export class DirectoryTree {
   selectFolder(folderId) {
     this.selectedFolderId = folderId;
     this.render();
+    this.onSelectFolder?.();
   }
 
   selectDocument(snapshot) {
@@ -46,6 +55,7 @@ export class DirectoryTree {
   }
 
   async toggleFolder(folderId) {
+    const epoch = this.client.epoch;
     this.selectFolder(folderId);
     if (this.expanded.has(folderId)) {
       this.expanded.delete(folderId);
@@ -56,20 +66,25 @@ export class DirectoryTree {
     try {
       // 首次展开才发请求；刷新时重新读取已经展开的目录。
       if (!this.children.has(folderId)) await this.loadChildren(folderId);
+      if (epoch !== this.client.epoch) return;
       this.expanded.add(folderId);
       this.render();
     } catch (error) {
-      this.onError(error);
+      if (epoch === this.client.epoch) this.onError(error);
     }
   }
 
   async refresh() {
+    if (!this.root) return;
+    const epoch = this.client.epoch;
     const folderIds = new Set([this.root.id, ...this.expanded, this.selectedFolderId]);
     for (const folderId of folderIds) {
       if (!folderId) continue;
       try {
         await this.loadChildren(folderId);
+        if (epoch !== this.client.epoch) return;
       } catch (error) {
+        if (epoch !== this.client.epoch) return;
         if (error.status === 404) {
           this.expanded.delete(folderId);
           this.children.delete(folderId);
@@ -78,6 +93,7 @@ export class DirectoryTree {
           }
         }
         this.onError(error);
+        if (epoch !== this.client.epoch) return;
       }
     }
     this.render();
@@ -85,7 +101,7 @@ export class DirectoryTree {
 
   render() {
     this.treeElement.replaceChildren();
-    if (!this.root) return;
+    if (!this.root) { this.folderLabel.textContent = ''; return; }
 
     const folder = this.nodes.get(this.selectedFolderId);
     this.folderLabel.textContent = '新建位置：' + (folder?.path || folder?.name || '');
