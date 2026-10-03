@@ -703,3 +703,27 @@ def _insert_document(repo, workspace_id, branch_id, object_id, parent_id, name, 
             1, revision_id, now,
         )
     )
+
+
+@dataclass(frozen=True)
+class TestActor:
+    user_id: str
+    session_token: str
+
+
+def seed_test_actors(database: Database, workspace_id: str) -> dict[str, TestActor]:
+    """Explicit content-test actors; identity tests must use real login instead."""
+    from datetime import datetime, timedelta, timezone
+    from src.identity.tokens import new_token, token_digest
+    from src.storage.identity_repository import IdentityRepository, UserRecord, SessionRecord
+    now = datetime.now(timezone.utc)
+    result = {}
+    with database.transaction(write=True) as connection:
+        identity = IdentityRepository(connection)
+        for role in ('owner', 'editor', 'reader'):
+            user_id, token = 'test-' + role, new_token()
+            identity.insert_user(UserRecord(user_id, user_id, role, 'active', role == 'owner', 1, 1, now.isoformat(), now.isoformat()))
+            identity.insert_session(SessionRecord(token_digest(token), user_id, 1, new_token(), now.isoformat(), (now + timedelta(hours=24)).isoformat(), None))
+            connection.execute('INSERT INTO workspace_memberships VALUES (?,?,?,?,?,?,?)', (workspace_id, user_id, role, 'active', 1, now.isoformat(), now.isoformat()))
+            result[role] = TestActor(user_id, token)
+    return result

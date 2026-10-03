@@ -92,6 +92,12 @@ class AccessRepository:
     def count_effective_owners(self, *, excluding_user_id: str | None = None) -> int:
         return self.connection.execute("SELECT COUNT(*) FROM workspace_memberships m JOIN users u ON u.id=m.user_id WHERE m.workspace_id=? AND m.role='owner' AND m.status='active' AND u.status IN ('active','reset_required') AND (? IS NULL OR u.id<>?)", (self.workspace_id,excluding_user_id,excluding_user_id)).fetchone()[0]
 
+    def has_any_owner(self) -> bool:
+        return self.connection.execute("SELECT 1 FROM workspace_memberships WHERE role='owner' LIMIT 1").fetchone() is not None
+
+    def count_effective_owners_in_workspace(self, workspace_id: str, *, excluding_user_id: str) -> int:
+        return self.connection.execute("SELECT COUNT(*) FROM workspace_memberships m JOIN users u ON u.id=m.user_id WHERE m.workspace_id=? AND m.role='owner' AND m.status='active' AND u.status IN ('active','reset_required') AND u.id<>?", (workspace_id, excluding_user_id)).fetchone()[0]
+
     def owner_workspace_ids(self, user_id: str) -> tuple[str, ...]:
         return tuple(r[0] for r in self.connection.execute("SELECT workspace_id FROM workspace_memberships WHERE user_id=? AND role='owner' AND status='active' ORDER BY workspace_id", (user_id,)))
 
