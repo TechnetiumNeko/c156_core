@@ -127,3 +127,20 @@ test('another account requires explicit discard and uncertain save remains prote
   s.saveSucceeded(recheck,doc('original','r3'));assert.equal(s.shouldWarnBeforeUnload,false);
   s.edit('mine');assert.equal(s.setIdentity('bob',{discard:true}),true);assert.equal(s.document,null);assert.equal(s.draft,'');
 });
+test('access tickets bind document selection and latest permission request, including A to B to A', () => {
+  const s = new EditorState(); s.setIdentity('alice'); s.open(doc());
+  const delayedRefresh = s.beginAccess();
+  const pendingSelection = s.beginLoad();
+  assert.equal(s.isAccessCurrent(delayedRefresh), false);
+  s.finishLoad(pendingSelection, doc('b', 'rb', 'b'));
+  const delayedFreeze = s.beginAccess();
+  s.finishLoad(s.beginLoad(), doc());
+  assert.equal(s.isAccessCurrent(delayedRefresh), false);
+  assert.equal(s.isAccessCurrent(delayedFreeze), false);
+  const superseded = s.beginAccess();
+  const current = s.beginAccess();
+  assert.equal(s.isAccessCurrent(superseded), false);
+  assert.equal(s.isAccessCurrent(current), true);
+  s.setIdentity(null);
+  assert.equal(s.isAccessCurrent(current), false);
+});

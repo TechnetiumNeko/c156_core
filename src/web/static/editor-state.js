@@ -13,6 +13,8 @@ export class EditorState {
     this.initial = ''; // 已保存正文在 textarea 中的呈现值
     this.draft = ''; // 用户当前输入
     this.revision = null; // 当前草稿基于的正文修订
+    this.documentGeneration = 0;
+    this.accessGeneration = 0;
     this.loading = 0; // 加载序号：后发的请求作废前一个请求
     this.saving = null; // 在途保存请求，含发送时的正文与修订
     this.conflict = false;
@@ -53,6 +55,7 @@ export class EditorState {
   }
 
   open(snapshot) {
+    this.documentGeneration += 1;
     this.owner = this.identity;
     this.uncertainSave = false;
     this.document = snapshot;
@@ -78,6 +81,25 @@ export class EditorState {
     if (sequence.sequence !== this.loading || sequence.epoch !== this.epoch || sequence.userId !== this.identity) return false;
     this.open(snapshot);
     return true;
+  }
+
+  beginAccess() {
+    return {
+      objectId: this.document?.id,
+      epoch: this.epoch,
+      userId: this.identity,
+      selection: this.loading,
+      documentGeneration: this.documentGeneration,
+      accessGeneration: ++this.accessGeneration,
+    };
+  }
+
+  isAccessCurrent(ticket) {
+    return !this.paused && !!ticket.objectId &&
+      ticket.objectId === this.document?.id && ticket.epoch === this.epoch &&
+      ticket.userId === this.identity && ticket.selection === this.loading &&
+      ticket.documentGeneration === this.documentGeneration &&
+      ticket.accessGeneration === this.accessGeneration;
   }
 
   beginSave() {

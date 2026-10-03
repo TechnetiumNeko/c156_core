@@ -120,14 +120,42 @@ async function logout() {
 }
 async function changePassword(v) {await client.changePassword(v.old_password,v.new_password);await sessionLost();}
 async function refreshDocumentAccess() {
-  if(!user || !state.document)return;
-  const epoch=client.epoch;
-  try {const result=await client.readDocument(state.document.id);if(epoch!==client.epoch)return;documentAccess=result.access;directory.remember(result.document);renderEditorStatus();}
-  catch(error) {if(epoch!==client.epoch)return;documentAccess=null;renderEditorStatus();if(error.status===401)await sessionLost();else showError(error);}
+  if (!user || !state.document) return;
+  const epoch = client.epoch;
+  const ticket = state.beginAccess();
+  const current = () => epoch === client.epoch && state.isAccessCurrent(ticket);
+  try {
+    const result = await client.readDocument(ticket.objectId);
+    if (!current()) return;
+    documentAccess = result.access;
+    directory.remember(result.document);
+    renderEditorStatus();
+  } catch (error) {
+    if (!current()) return;
+    documentAccess = null;
+    renderEditorStatus();
+    if (error.status === 401) await sessionLost();
+    else showError(error);
+  }
 }
+
 async function freezeDocument(enabled) {
-  if(!user || !documentAccess || !state.document)return;
-  await runAction(async()=>{const {access}=await client.freeze(state.document.id,documentAccess.version,enabled);documentAccess=access;renderEditorStatus();},refreshDocumentAccess);
+  if (!user || !documentAccess || !state.document) return;
+  const epoch = client.epoch;
+  const ticket = state.beginAccess();
+  const version = documentAccess.version;
+  const current = () => epoch === client.epoch && state.isAccessCurrent(ticket);
+  try {
+    const { access } = await client.freeze(ticket.objectId, version, enabled);
+    if (!current()) return;
+    documentAccess = access;
+    renderEditorStatus();
+  } catch (error) {
+    if (!current()) return;
+    if (error.status === 401) { await sessionLost(); return; }
+    showError(error);
+    if (error.status === 409) await refreshDocumentAccess();
+  }
 }
 
 
