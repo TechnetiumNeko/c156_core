@@ -125,3 +125,21 @@ class IdentityStorageTests(TempPathTestCase):
             self.assertFalse(result.allowed)
             self.assertEqual(result.retry_after,900)
             self.assertEqual(c.execute('SELECT COUNT(*) FROM auth_throttles').fetchone()[0],10000)
+
+            # 100-row cleanup leaves this newer expired bucket behind.
+            c.executemany('INSERT INTO auth_throttles VALUES (?,?,?,1)', [
+                ('token',str(i),(now-timedelta(seconds=901)).isoformat()) for i in range(100)
+            ])
+            c.execute('INSERT INTO auth_throttles VALUES (?,?,?,7)', ('token','surviving',expired))
+            repo=AuthThrottleRepository(c)
+            result=repo.consume('token','surviving',limit=10,now=now)
+            self.assertFalse(result.allowed)
+            self.assertEqual(result.retry_after,900)
+            self.assertEqual(c.execute('SELECT window_started_at,attempts FROM auth_throttles WHERE bucket_type=? AND bucket_key=?', ('token','surviving')).fetchone()[:], (expired,7))
+            self.assertEqual(c.execute('SELECT COUNT(*) FROM auth_throttles WHERE window_started_at>?', (expired,)).fetchone()[0],10000)
+            self.assertEqual(c.execute('SELECT COUNT(*) FROM auth_throttles WHERE window_started_at<=?', (expired,)).fetchone()[0],1)
+            self.assertTrue(repo.consume('login','0',limit=10,now=now).allowed)
+            # Once a slot is free, reusing the stale key may start a new window.
+            c.execute("DELETE FROM auth_throttles WHERE bucket_type='login' AND bucket_key='1'")
+            self.assertTrue(repo.consume('token','surviving',limit=10,now=now).allowed)
+            self.assertEqual(c.execute('SELECT window_started_at,attempts FROM auth_throttles WHERE bucket_type=? AND bucket_key=?', ('token','surviving')).fetchone()[:], (now.isoformat(),1))

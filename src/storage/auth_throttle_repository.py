@@ -37,16 +37,18 @@ class AuthThrottleRepository:
         row = self.connection.execute('SELECT window_started_at,attempts FROM auth_throttles WHERE bucket_type=? AND bucket_key=?', (bucket_type,bucket_key)).fetchone()
         if row is not None:
             started = datetime.fromisoformat(row['window_started_at'])
-            if started + timedelta(seconds=self.WINDOW_SECONDS) <= now:
-                self.connection.execute('UPDATE auth_throttles SET window_started_at=?,attempts=1 WHERE bucket_type=? AND bucket_key=?', (now.isoformat(),bucket_type,bucket_key))
-                return ThrottleResult(True,0)
-            self.connection.execute('UPDATE auth_throttles SET attempts=attempts+1 WHERE bucket_type=? AND bucket_key=?', (bucket_type,bucket_key))
-            allowed = row['attempts'] < limit
-            return ThrottleResult(allowed,0 if allowed else max(1,math.ceil((started+timedelta(seconds=self.WINDOW_SECONDS)-now).total_seconds())))
+            if started + timedelta(seconds=self.WINDOW_SECONDS) > now:
+                self.connection.execute('UPDATE auth_throttles SET attempts=attempts+1 WHERE bucket_type=? AND bucket_key=?', (bucket_type,bucket_key))
+                allowed = row['attempts'] < limit
+                return ThrottleResult(allowed,0 if allowed else max(1,math.ceil((started+timedelta(seconds=self.WINDOW_SECONDS)-now).total_seconds())))
+        # Both a new key and an expired key need a free active bucket slot.
         count = self.connection.execute('SELECT COUNT(*) FROM auth_throttles WHERE window_started_at>?', (cutoff,)).fetchone()[0]
         if count >= self.CAPACITY:
             earliest = self.connection.execute('SELECT MIN(window_started_at) FROM auth_throttles WHERE window_started_at>?', (cutoff,)).fetchone()[0]
             retry = math.ceil((datetime.fromisoformat(earliest)+timedelta(seconds=self.WINDOW_SECONDS)-now).total_seconds())
             return ThrottleResult(False,max(1,retry))
-        self.connection.execute('INSERT INTO auth_throttles VALUES (?,?,?,1)', (bucket_type,bucket_key,now.isoformat()))
+        if row is not None:
+            self.connection.execute('UPDATE auth_throttles SET window_started_at=?,attempts=1 WHERE bucket_type=? AND bucket_key=?', (now.isoformat(),bucket_type,bucket_key))
+        else:
+            self.connection.execute('INSERT INTO auth_throttles VALUES (?,?,?,1)', (bucket_type,bucket_key,now.isoformat()))
         return ThrottleResult(True,0)
