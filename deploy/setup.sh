@@ -16,24 +16,30 @@ load_config "$root"
 if grep -qx 'DEPLOY_ROOT=' "$root/config.env"; then
   sed -i "s|^DEPLOY_ROOT=$|DEPLOY_ROOT=$root|" "$root/config.env"
 fi
+for key in APP_UID APP_GID; do
+  if grep -qx "$key=" "$root/config.env"; then sed -i "s|^$key=$|$key=${!key}|" "$root/config.env"; fi
+done
 [[ $SITE_DOMAIN != docs.example.com ]] || fail 'set your real SITE_DOMAIN first'
 check_environment
-if [[ ! -L $root/current ]]; then
+if [[ ! -f $root/.deploy-sequence ]]; then
   command -v ss >/dev/null || fail 'ss is needed for the first-install port check'
   [[ -z $(ss -H -ltn "sport = :$APP_PORT") ]] || fail "port $APP_PORT is occupied; choose another APP_PORT"
 fi
-mkdir -p "$root"/{data,assets,backups,releases,nginx}
-chmod 700 "$root/data" "$root/assets" "$root/backups"
-chown "$APP_UID:$APP_GID" "$root/data" "$root/assets" "$root/backups"
+mkdir -p "$root"/{data,assets,backups,nginx}
+for directory in "$root/data" "$root/assets" "$root/backups"; do
+  if [[ $(stat -c '%a' "$directory") != 700 ]]; then chmod 700 "$directory"; fi
+  if [[ $(stat -c '%u:%g' "$directory") != "$APP_UID:$APP_GID" ]]; then
+    chown "$APP_UID:$APP_GID" "$directory" || fail "directory ownership needs an administrator: chown $APP_UID:$APP_GID $directory"
+  fi
+done
 if [[ ! -f $root/nginx/proxy.inc ]]; then
   sed "s/@APP_PORT@/$APP_PORT/g" "$(dirname "${BASH_SOURCE[0]}")/nginx-proxy.inc.template" > "$root/nginx/proxy.inc"
   chmod 644 "$root/nginx/proxy.inc"
 fi
 if [[ $action == --init-db ]]; then
-  release=$(readlink -f "$root/prepared")
-  [[ -d $release && $release == "$root/releases/"* ]] || fail 'prepare a release first (see README)'
+  load_images "$root"
   [[ ! -e $root/data/c156.sqlite ]] || fail 'database already exists; refusing initialization'
-  compose_for "$release" run --rm --no-deps backend python -m src.storage init --database /data/c156.sqlite
-  compose_for "$release" run --rm --no-deps backend python -m src.identity bootstrap-admin --database /data/c156.sqlite --login-name admin --display-name 管理员
+  compose_for "$root" run --rm --no-deps backend python -m src.storage init --database /data/c156.sqlite
+  compose_for "$root" run --rm --no-deps backend python -m src.identity bootstrap-admin --database /data/c156.sqlite --login-name admin --display-name 管理员
 fi
 printf 'Directories ready. Data: %s/data; assets: %s/assets; backups: %s/backups\n' "$root" "$root" "$root"
