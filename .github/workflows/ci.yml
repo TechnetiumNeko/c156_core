@@ -1,0 +1,110 @@
+name: Test, build and deploy
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with: {python-version: '3.13'}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with: {node-version: '22', cache: npm, cache-dependency-path: frontend/package-lock.json}
+      - run: pip install -r requirements-dev.txt
+      - run: python -m unittest discover -s tests -v
+      - name: Legacy web checks with sanitizer
+        run: |
+          npm install --prefix "$RUNNER_TEMP/c156-web" --no-save jsdom@26.1.0
+          C156_JSDOM_PATH="$RUNNER_TEMP/c156-web/node_modules/jsdom" node --test tests/web/*.test.mjs
+      - run: npm ci && npm test && npm run typecheck && npm run build
+        working-directory: frontend
+      - run: bash -n deploy/*.sh
+  images:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    outputs:
+      backend: ${{ steps.publish.outputs.backend }}
+      frontend: ${{ steps.publish.outputs.frontend }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build final images once
+        env: {BUILD_SHA: '${{ github.sha }}'}
+        run: |
+          docker buildx build --platform linux/amd64 --load --provenance=false --sbom=false --build-arg BUILD_SHA="$BUILD_SHA" -f deploy/backend.Dockerfile -t "c156-backend:$BUILD_SHA" .
+          docker buildx build --platform linux/amd64 --load --provenance=false --sbom=false --build-arg BUILD_SHA="$BUILD_SHA" -f deploy/frontend.Dockerfile -t "c156-frontend:$BUILD_SHA" .
+      - name: Test actual final images and restart persistence
+        env:
+          BUILD_SHA: ${{ github.sha }}
+          BACKEND_IMAGE: c156-backend:${{ github.sha }}
+          FRONTEND_IMAGE: c156-frontend:${{ github.sha }}
+        run: python3 deploy/smoke.py
+      - name: Log in to existing ACR personal registry
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ${{ vars.ACR_REGISTRY }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+      - name: Push the tested images, keep immutable digest references
+        id: publish
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
+        env:
+          BUILD_SHA: ${{ github.sha }}
+          ACR_REGISTRY: ${{ vars.ACR_REGISTRY }}
+          ACR_NAMESPACE: ${{ vars.ACR_NAMESPACE }}
+        run: |
+          set -euo pipefail
+          for service in backend frontend; do
+            image="$ACR_REGISTRY/$ACR_NAMESPACE/c156-$service:$BUILD_SHA"
+            docker tag "c156-$service:$BUILD_SHA" "$image"
+            docker push "$image"
+            digest=$(docker image inspect "$image" --format '{{index .RepoDigests 0}}')
+            [[ "$digest" == "$ACR_REGISTRY/$ACR_NAMESPACE/c156-$service@sha256:"* ]]
+            printf '%s=%s\n' "$service" "$digest" >> "$GITHUB_OUTPUT"
+          done
+  deploy:
+    needs: images
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    concurrency:
+      group: c156-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Package and deliver the same commit
+        env:
+          BACKEND_IMAGE: ${{ needs.images.outputs.backend }}
+          FRONTEND_IMAGE: ${{ needs.images.outputs.frontend }}
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+          DEPLOY_ROOT: ${{ vars.DEPLOY_ROOT || '/srv/c156' }}
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          SHA: ${{ github.sha }}
+          SEQUENCE: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          [[ "$DEPLOY_HOST" =~ ^[a-zA-Z0-9.-]+$ && "$DEPLOY_USER" =~ ^[a-zA-Z0-9_-]+$ ]]
+          [[ "$DEPLOY_PORT" =~ ^[0-9]{1,5}$ && "$DEPLOY_ROOT" =~ ^/[a-zA-Z0-9_./-]+$ && "$DEPLOY_ROOT" != / && "$DEPLOY_ROOT" != *'/../'* ]]
+          bash deploy/package.sh "$RUNNER_TEMP/release" "$SHA" "$BACKEND_IMAGE" "$FRONTEND_IMAGE" "$SEQUENCE"
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$SSH_KEY" > "$HOME/.ssh/id_c156"
+          printf '%s\n' "$KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/id_c156" "$HOME/.ssh/known_hosts"
+          ssh_options=(-i "$HOME/.ssh/id_c156" -p "$DEPLOY_PORT" -o StrictHostKeyChecking=yes -o BatchMode=yes)
+          destination="$DEPLOY_ROOT/releases/$SEQUENCE-$SHA"
+          ssh "${ssh_options[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p '$destination'"
+          rsync -az -e "ssh -i $HOME/.ssh/id_c156 -p $DEPLOY_PORT -o StrictHostKeyChecking=yes -o BatchMode=yes" "$RUNNER_TEMP/release/" "$DEPLOY_USER@$DEPLOY_HOST:$destination/"
+          ssh "${ssh_options[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "bash '$destination/deploy.sh' '$DEPLOY_ROOT' '$destination'"
+          rm -f "$HOME/.ssh/id_c156"
