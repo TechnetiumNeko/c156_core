@@ -145,3 +145,68 @@ test('obsolete authentication recovery cannot overwrite newer anonymous nonce', 
     assert.equal(client.nonce, 'current');
     assert.equal(session.user, null);
 });
+
+test('successful login with failed bootstrap can recover same-user draft through bootstrap retry', async () => {
+    let call = 0;
+    const client = new ApiClient(async () => {
+        if (++call === 1) return json(grant('alice'));
+        if (call === 2) throw Error('offline');
+        return json(bootstrap('alice'));
+    });
+    client.nonce = 'initial';
+    const editor = new EditorState();
+    editor.setIdentity('alice'); editor.open(doc); editor.edit('kept');
+    const session = new SessionState(client, editor);
+    await assert.rejects(session.login('alice', 'pw'), (error: ApiError) => error.code === 'network');
+    assert.equal(session.recoveryNeeded, true);
+    assert.equal(session.user, null); assert.equal(client.nonce, null);
+    assert.equal(editor.paused, true); assert.equal(editor.draft, 'kept');
+    assert.equal(await session.bootstrap(), true);
+    assert.equal(session.recoveryNeeded, false); assert.equal((session.user as { id: string } | null)?.id, 'alice');
+    assert.equal(editor.paused, false); assert.equal(editor.draft, 'kept');
+});
+test('failed anonymous proof recovery after wrong password or logout exposes recoverable state', async () => {
+    for (const operation of ['login', 'logout'] as const) {
+        let call = 0;
+        const client = new ApiClient(async () => {
+            if (++call === 1) return operation === 'login'
+                ? json({ error: { code: 'unauthenticated', message: 'Wrong password' } }, 401)
+                : json({ ok: true });
+            if (call === 2) throw Error('offline');
+            if (call === 3) return json({ initialized: true, nonce: 'recovered' });
+            if (call === 4) return json(grant('alice'));
+            return json(bootstrap('alice'));
+        });
+        client.nonce = 'initial'; client.csrf = 'proof';
+        const editor = new EditorState();
+        editor.setIdentity('alice'); editor.open(doc); editor.edit('kept');
+        const session = new SessionState(client, editor);
+        await assert.rejects(operation === 'login' ? session.login('alice', 'wrong') : session.logout());
+        assert.equal(session.recoveryNeeded, true); assert.equal(editor.draft, 'kept');
+        assert.equal(editor.paused, true);
+        await session.bootstrap();
+        assert.equal(session.recoveryNeeded, false); assert.equal(client.nonce, 'recovered');
+        await session.login('alice', 'correct');
+        assert.equal(session.user?.id, 'alice'); assert.equal(editor.draft, 'kept');
+    }
+});
+
+test('bootstrap retry after successful foreign login keeps old draft blocked until discard', async () => {
+    let call = 0;
+    const client = new ApiClient(async () => {
+        if (++call === 1) return json(grant('bob'));
+        if (call === 2) throw Error('offline');
+        return json(bootstrap('bob'));
+    });
+    client.nonce = 'initial';
+    const editor = new EditorState();
+    editor.setIdentity('alice'); editor.open(doc); editor.edit('alice draft');
+    const session = new SessionState(client, editor);
+    await assert.rejects(session.login('bob', 'pw'));
+    assert.equal(await session.bootstrap(), false);
+    assert.equal(session.recoveryNeeded, false); assert.equal(session.blocked, true);
+    assert.equal(editor.draft, 'alice draft'); assert.equal(editor.owner, 'alice');
+    assert.equal(editor.paused, true); assert.equal(session.user, null);
+    assert.equal(session.acceptPending({ discard: true }), true);
+    assert.equal((session.user as { id: string } | null)?.id, 'bob'); assert.equal(editor.document, null);
+});

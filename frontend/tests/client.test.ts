@@ -64,3 +64,18 @@ test('domain conflict and transport failure remain distinguishable', async () =>
     });
     await assert.rejects(network.bootstrap(), (error: ApiError) => error.code === 'network');
 });
+
+test('authenticated nonmember bootstrap accepts null role for public root or no root, rejects invalid roles', async () => {
+    const root = { id: 'root', kind: 'folder', name: 'Root', parent_id: null, position: 0, version: 1, path: '/', created_at: '', modified_at: '', metadata: {} };
+    const access = { version: 1, actions: ['read'], visibility: 'public', frozen: false, can_freeze: false, can_unfreeze: false };
+    for (const visible of [true, false]) {
+        const value = { ...grant, initialized: true, workspace_access_version: 1, workspace_role: null, root: visible ? root : null, root_access: visible ? access : null };
+        const client = new ApiClient(async () => json(value));
+        assert.deepEqual(await client.bootstrap(), value);
+        assert.equal(client.csrf, 'csrf');
+        for (const role of [42, {}, undefined]) {
+            const invalid = new ApiClient(async () => json({ ...value, workspace_role: role }));
+            await assert.rejects(invalid.bootstrap(), (error: ApiError) => error.code === 'response');
+        }
+    }
+});

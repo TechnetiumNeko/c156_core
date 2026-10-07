@@ -7,6 +7,7 @@ export class SessionState {
     rootAccess: Access | null = null;
     initialized = false;
     blocked = false;
+    recoveryNeeded = true;
     epoch = 0;
     private pending: Bootstrap | null = null;
     private client: ApiClient;
@@ -23,6 +24,7 @@ export class SessionState {
         this.blocked = false;
     }
     private accept(value: Bootstrap, discard = false) {
+        this.recoveryNeeded = false;
         this.initialized = value.initialized;
         if ('nonce' in value) {
             this.reset();
@@ -50,6 +52,7 @@ export class SessionState {
         return this.accept(this.pending, true);
     }
     private begin() {
+        this.recoveryNeeded = true;
         const nonce = this.client.nonce;
         const csrf = this.client.csrf;
         this.client.invalidate();
