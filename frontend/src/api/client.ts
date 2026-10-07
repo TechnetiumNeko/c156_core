@@ -20,7 +20,8 @@ const document = (v: unknown) => record(v) && node(v.document) && record(v.docum
 export class ApiClient {
   epoch = 0; nonce: string | null = null; csrf: string | null = null;
   private transport: typeof fetch;
-  constructor(transport: typeof fetch = fetch) { this.transport = transport; }
+  // Native browser fetch rejects the ApiClient receiver when stored directly as a method.
+  constructor(transport: typeof fetch = (...args) => fetch(...args)) { this.transport = transport; }
   invalidate() { this.epoch++; this.nonce = null; this.csrf = null; }
   private async request<T>(path: string, validate: (v: unknown) => boolean, method = 'GET', body?: unknown, proof?: 'nonce' | 'csrf'): Promise<T> {
     const epoch = this.epoch;

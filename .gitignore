@@ -55,15 +55,11 @@ node_modules/
 
 # Server deployment configuration and runtime state in a cloned checkout
 /config.env
-/releases/
+/images.env
+/images.env.new.*
 /backups/
 /assets/
 /nginx/
-/current
-/previous
-/prepared
 /deploy.lock
-/sequence
-/sequence.new.*
-/.current.before.*
-/.previous.before.*
+/.deploy-sequence
+/.deploy-sequence.new.*

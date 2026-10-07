@@ -11,7 +11,7 @@ on:
         options: [test, prod]
         default: test
       prepare_only:
-        description: 'First install: only deliver and pull images; initialize library and panel before live deployment'
+        description: 'First install: only update checkout and pull images; initialize library and panel before live deployment'
         type: boolean
         default: false
 permissions:
@@ -34,7 +34,7 @@ jobs:
           C156_JSDOM_PATH="$RUNNER_TEMP/c156-web/node_modules/jsdom" node --test tests/web/*.test.mjs
       - run: npm ci && npm test && npm run typecheck && npm run build
         working-directory: frontend
-      - run: bash -n deploy/*.sh
+      - run: for script in deploy/*.sh; do bash -n "$script"; done
   images:
     needs: checks
     outputs:
@@ -161,7 +161,7 @@ jobs:
             [[ "$digest" == "$ACR_REGISTRY/$ACR_NAMESPACE/c156-$service@sha256:"* ]]
             printf '%s=%s\n' "$service" "$digest" >> "$GITHUB_OUTPUT"
           done
-      - name: Package and deliver the same commit
+      - name: Update checkout and deploy Compose
         if: steps.config.outputs.enabled == 'true'
         env:
           BACKEND_IMAGE: ${{ steps.publish.outputs.backend }}
@@ -173,13 +173,15 @@ jobs:
           SSH_KEY: ${{ secrets[format('{0}_DEPLOY_SSH_KEY', inputs.target_environment == 'prod' && 'PROD' || 'TEST')] }}
           SHA: ${{ github.sha }}
           SEQUENCE: ${{ github.run_number }}
-          ATTEMPT: ${{ github.run_attempt }}
           PREPARE_ONLY: ${{ inputs.prepare_only }}
         run: |
           set -euo pipefail
           [[ "$DEPLOY_HOST" =~ ^[a-zA-Z0-9.-]+$ && "$DEPLOY_USER" =~ ^[a-zA-Z0-9_-]+$ ]]
           [[ "$DEPLOY_PORT" =~ ^[0-9]{1,5}$ ]]
-          bash deploy/package.sh "$RUNNER_TEMP/release" "$SHA" "$BACKEND_IMAGE" "$FRONTEND_IMAGE" "$SEQUENCE"
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ && "$SEQUENCE" =~ ^[1-9][0-9]{0,14}$ ]]
+          for image in "$BACKEND_IMAGE" "$FRONTEND_IMAGE"; do
+            [[ "$image" =~ ^[a-zA-Z0-9._:/-]+@sha256:[0-9a-f]{64}$ ]]
+          done
           install -d -m 700 "$HOME/.ssh"
           printf '%s\n' "$SSH_KEY" > "$HOME/.ssh/id_c156"
           chmod 600 "$HOME/.ssh/id_c156"
@@ -191,15 +193,9 @@ jobs:
             DEPLOY_ROOT="${remote_home%/}/c156"
           fi
           validate_root "$DEPLOY_ROOT"
-          [[ "$ATTEMPT" =~ ^[1-9][0-9]*$ ]]
-          destination="$DEPLOY_ROOT/releases/$SEQUENCE-$ATTEMPT-$SHA"
-          # Paths are validated above and intentionally expanded on the runner.
-          # shellcheck disable=SC2029
-          ssh "${ssh_options[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "mkdir '$destination'"
-          rsync -az -e "ssh -i $HOME/.ssh/id_c156 -p $DEPLOY_PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes" "$RUNNER_TEMP/release/" "$DEPLOY_USER@$DEPLOY_HOST:$destination/"
           deploy_args=
           [[ "$PREPARE_ONLY" != true ]] || deploy_args=--prepare
-          # Paths are validated above and intentionally expanded on the runner.
+          # All arguments are validated locally; the streamed script also validates them.
           # shellcheck disable=SC2029
-          ssh "${ssh_options[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "bash '$destination/deploy.sh' '$DEPLOY_ROOT' '$destination' $deploy_args"
+          ssh "${ssh_options[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "bash -s -- '$DEPLOY_ROOT' '$SHA' '$BACKEND_IMAGE' '$FRONTEND_IMAGE' '$SEQUENCE' $deploy_args" < deploy/deploy.sh
           rm -f "$HOME/.ssh/id_c156"

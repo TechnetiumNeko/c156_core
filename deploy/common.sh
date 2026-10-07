@@ -9,13 +9,15 @@ load_config() {
   local requested=$1 key value line
   validate_root "$requested"
   DEPLOY_ROOT=$requested; APP_PORT=28156; PROXY_NETWORK=172.30.156.0/24
-  APP_UID=10001; APP_GID=10001; NGINX_MANAGED=1; NGINX_BIN=nginx; SITE_DOMAIN=
+  APP_UID=$(id -u); APP_GID=$(id -g);
+  if [[ $APP_UID == 0 ]]; then APP_UID=10001; APP_GID=10001; fi
+  NGINX_MANAGED=1; NGINX_BIN=nginx; SITE_DOMAIN=
   [[ -f $requested/config.env ]] || fail "missing $requested/config.env"
   while IFS= read -r line || [[ -n $line ]]; do
     [[ -z $line || $line == \#* ]] && continue
     [[ $line == *=* ]] || fail 'config must use KEY=value'
     key=${line%%=*}; value=${line#*=}
-    case $key in DEPLOY_ROOT) [[ -z $value ]] || DEPLOY_ROOT=$value ;; SITE_DOMAIN|APP_PORT|PROXY_NETWORK|APP_UID|APP_GID|NGINX_MANAGED|NGINX_BIN) printf -v "$key" '%s' "$value" ;; *) fail "unknown config key: $key" ;; esac
+    case $key in DEPLOY_ROOT) [[ -z $value ]] || DEPLOY_ROOT=$value ;; APP_UID|APP_GID) [[ -z $value ]] || printf -v "$key" '%s' "$value" ;; SITE_DOMAIN|APP_PORT|PROXY_NETWORK|NGINX_MANAGED|NGINX_BIN) printf -v "$key" '%s' "$value" ;; *) fail "unknown config key: $key" ;; esac
   done < "$requested/config.env"
   [[ $DEPLOY_ROOT == "$requested" ]] || fail 'DEPLOY_ROOT differs from requested root'
   [[ $SITE_DOMAIN =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ && $SITE_DOMAIN == *.* && $SITE_DOMAIN != *..* ]] || fail 'invalid SITE_DOMAIN'
@@ -26,15 +28,15 @@ load_config() {
   [[ $NGINX_BIN =~ ^[a-zA-Z0-9_./-]+$ ]] || fail 'invalid nginx binary'
   export DEPLOY_ROOT SITE_DOMAIN APP_PORT PROXY_NETWORK APP_UID APP_GID
 }
-load_release() {
+load_images() {
   local directory=$1 key value line
   BUILD_SHA=; BACKEND_IMAGE=; FRONTEND_IMAGE=; DEPLOY_SEQUENCE=
-  [[ -f $directory/release.env ]] || fail 'release.env missing'
+  [[ -f $directory/images.env ]] || fail 'images.env missing'
   while IFS= read -r line || [[ -n $line ]]; do
     [[ -z $line || $line == \#* ]] && continue
     key=${line%%=*}; value=${line#*=}
-    case $key in BUILD_SHA|BACKEND_IMAGE|FRONTEND_IMAGE|DEPLOY_SEQUENCE) printf -v "$key" '%s' "$value" ;; *) fail 'invalid release key' ;; esac
-  done < "$directory/release.env"
+    case $key in BUILD_SHA|BACKEND_IMAGE|FRONTEND_IMAGE|DEPLOY_SEQUENCE) printf -v "$key" '%s' "$value" ;; *) fail 'invalid image configuration key' ;; esac
+  done < "$directory/images.env"
   [[ $BUILD_SHA =~ ^[0-9a-f]{40}$ ]] || fail 'invalid build SHA'
   [[ $DEPLOY_SEQUENCE =~ ^[1-9][0-9]{0,14}$ ]] || fail 'invalid deployment sequence'
   for value in "$BACKEND_IMAGE" "$FRONTEND_IMAGE"; do
@@ -43,9 +45,9 @@ load_release() {
   export BUILD_SHA BACKEND_IMAGE FRONTEND_IMAGE DEPLOY_SEQUENCE
 }
 compose_for() {
-  local release=$1; shift
-  load_release "$release"
-  docker compose -p c156 --project-directory "$release" -f "$release/compose.yaml" "$@"
+  local root=$1; shift
+  load_images "$root"
+  docker compose -p c156 --project-directory "$root" -f "$root/deploy/compose.yaml" "$@"
 }
 check_environment() {
   local command
@@ -55,13 +57,40 @@ check_environment() {
   if [[ $NGINX_MANAGED == 1 ]]; then command -v "$NGINX_BIN" >/dev/null || fail 'nginx binary not found; set NGINX_BIN'; fi
 }
 
-release_pointer() {
-  local link=$1 resolved
-  if [[ ! -L $link ]]; then
-    [[ ! -e $link ]] || fail 'release state must be a symlink'
-    return 0
-  fi
-  resolved=$(realpath -e "$link") || fail 'broken release state pointer'
-  [[ -d $resolved && $resolved == "$DEPLOY_ROOT/releases/"* ]] || fail 'release state outside releases directory'
-  printf '%s\n' "$resolved"
+# A release check only: both frontend and API must report the tested SHA.
+# Defaults are deliberately fixed by deploy.sh; shorter bounds also allow local checks.
+poll_deployment_health() {
+  local sha=$1 local_base=$2 public_base=$3 duration=${4:-90} interval=${5:-5}
+  local deadline=$((SECONDS + duration)) base path expected body remaining request_timeout failed pause
+  while (( SECONDS < deadline )); do
+    failed=
+    for base in "$local_base" "$public_base"; do
+      for path in /build-info.json /api/healthz; do
+        remaining=$((deadline - SECONDS))
+        (( remaining > 0 )) || return 1
+        request_timeout=$remaining
+        (( request_timeout <= 5 )) || request_timeout=5
+        expected="{\"build_sha\":\"$sha\"}"
+        if [[ $path == /api/healthz ]]; then expected="{\"status\":\"ok\",\"build_sha\":\"$sha\"}"; fi
+        if body=$(curl --fail --silent --show-error --connect-timeout "$request_timeout" --max-time "$request_timeout" -H "Host: $SITE_DOMAIN" "$base$path" < /dev/null); then
+          body=$(printf '%s' "$body" | tr -d '[:space:]')
+          if [[ $body == "$expected" ]]; then continue; fi
+        fi
+        failed="$base$path"
+        break
+      done
+      [[ -z $failed ]] || break
+    done
+    if [[ -z $failed ]]; then
+      printf 'Health verified: local and public frontend/API match %s\n' "$sha"
+      return 0
+    fi
+    remaining=$((deadline - SECONDS))
+    (( remaining > 0 )) || break
+    pause=$interval
+    (( pause <= remaining )) || pause=$remaining
+    printf 'Waiting for %s to report %s; retry in %ss (%ss remaining)\n' "$failed" "$sha" "$pause" "$remaining" >&2
+    sleep "$pause"
+  done
+  return 1
 }

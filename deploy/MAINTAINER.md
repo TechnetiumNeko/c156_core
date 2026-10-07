@@ -34,7 +34,7 @@
 
 已有 TEST_DEPLOY_ROOT=/home/deploy/c156 可以保留；省略它时默认也是部署用户的家目录/c156。setup.sh 不传目录时也用同一默认值，并自动写入 config.env。自定义路径仍需让 GitHub 与服务器配置一致。
 
-两目标使用同一个 ACR 时，可在两组中分别填相同的 ACR 值；主机、SSH 和数据按服务器分开。两个部署账号都需要 Docker、项目目录以及对应 Nginx 操作权限。
+两目标使用同一个 ACR 时，可在两组中分别填相同的 ACR 值；主机、SSH 和数据按服务器分开。两个部署账号需要 Docker 和项目目录操作权限。推荐 NGINX_MANAGED=0，Nginx 校验与重载由管理员或面板负责。
 
 TEST_DEPLOY_ENABLED 未设为 true 时，main 自动发布不会推镜像或更改服务器。手动选 test／prod 时，对应开关未启用会明确报错。选 prod 后如果 PROD_ 参数缺失，会报缺失项，**不会借用 TEST_ 参数**。
 
@@ -48,7 +48,7 @@ TEST_DEPLOY_ENABLED 未设为 true 时，main 自动发布不会推镜像或更�
 
 公钥先加入各自服务器对应账号的 authorized_keys。密码、私钥不要放进仓库或服务器 config.env。
 
-**手动发布怎么选：** Actions → Test, build and deploy → Run workflow，分支 main，选 `target_environment=test` 或 `prod`；这个字段只选择部署目标，不要求创建同名 GitHub Environment。首次拉镜像勾选 `prepare_only`；完成对应服务器初始化和面板配置后，再运行同环境且不勾选 prepare_only。两台的 prepared/current、发布序号和回退记录分别保存在各自服务器。
+**手动发布怎么选：** Actions → Test, build and deploy → Run workflow，分支 main，选 `target_environment=test` 或 `prod`；这个字段只选择部署目标，不要求创建同名 GitHub Environment。首次拉镜像勾选 `prepare_only`；完成对应服务器初始化和入口配置后，再运行同环境且不勾选 prepare_only。两台的 config.env、images.env 和数据分别保存在各自服务器。
 
 每次运行都会检查、构建和测试本次 main 提交的镜像，通过 artifact 将同一产物交给选定环境推送和部署。prod 手动发布前，核对当前 main 提交已在 test 验证；main 有新提交时，应先验证新版本。镜像包只在该次 workflow 的任务间传递，不包含部署凭据，保留 3 天。
 
@@ -56,9 +56,9 @@ TEST_DEPLOY_ENABLED 未设为 true 时，main 自动发布不会推镜像或更�
 
 **C. 交接仓库地址和参数。** 无需打压缩包。朋友首次用 HTTPS git clone 到自己的 ~/c156，然后运行 deploy/setup.sh，在根目录填 config.env。公开仓库无需额外的 GitHub Deploy Key。
 
-确认部署代码已在 main，再把仓库地址和操作手册交给朋友。等服务器检查、SSH 公钥和配置完成后运行 prepare；完成初始化和面板配置后正式发布。test 首次安装未准备好时先不要启用自动部署开关；prod 始终手动选择。
+确认部署代码已在 main，再把仓库地址和操作手册交给朋友。等服务器检查、SSH 公钥和配置完成后运行 prepare；完成初始化和入口配置后正式发布。test 首次安装未准备好时先不要启用自动部署开关；prod 始终手动选择。
 
-首次 clone 用来取得 setup 和文档。后续仍由 Actions 交付固定版本发布文件和源码，不要求服务器自动 git pull。config.env、发布状态和运行目录已加入 Git 忽略，避免误提交服务器配置。
+首次 clone 用来取得源码、setup 和文档。后续 Actions 通过 SSH 执行 git fetch origin main，检出本次测试镜像对应的准确提交，写入 images.env，再拉镜像并执行 docker compose up。fetch 最多尝试三次，每次 90 秒、间隔 5 秒；服务器必须持续能访问 GitHub；无需 rsync 或源码压缩包。config.env、images.env 和运行目录已加入 Git 忽略。服务器有受 Git 跟踪的本地修改时会停止部署，不强制覆盖。
 
 ## 技术说明
 
@@ -70,19 +70,17 @@ TEST_DEPLOY_ENABLED 未设为 true 时，main 自动发布不会推镜像或更�
 /home/deploy/c156/assets/           资产挂载目录
 /home/deploy/c156/backups/          经过校验的快照
 /home/deploy/c156/nginx/proxy.inc   项目代理片段
-/home/deploy/c156/releases/         每次发布文件和同版本源码
-/home/deploy/c156/current           当前成功发布
-/home/deploy/c156/previous          上一次成功发布
-/home/deploy/c156/prepared          首次准备好的发布
+/home/deploy/c156/images.env        Actions 写入的 SHA 和镜像 digest
+/home/deploy/c156/deploy/compose.yaml  仓库内的 Compose 配置
 ```
 
-请求经过面板 Nginx（80/443）→ 本机 28156 → 前端容器 → FastAPI；后端不公开宿主机端口。默认只构建 amd64，匹配朋友的 x86_64 服务器。提供的 `6.6.47-12.oc9` 内核更接近 OpenCloudOS 9，可用 `cat /etc/os-release` 确认，不照 CentOS 7 的安装教程操作。
+请求经过宿主机 Nginx（80/443，手动或面板管理）→ 本机 28156 → 前端容器 → FastAPI；后端不公开宿主机端口。默认只构建 amd64，匹配朋友的 x86_64 服务器。提供的 `6.6.47-12.oc9` 内核更接近 OpenCloudOS 9，可用 `cat /etc/os-release` 确认，不照 CentOS 7 的安装教程操作。
 
 GitHub runner 拉官方基础镜像，ECS 拉 ACR 成品镜像。基础镜像固定 digest；阿里云 Docker Hub 加速器存在同步及范围限制，不用它给 runner 保证最新基础镜像。网络受限时，维护者将相同基础镜像同步至可访问 ACR，再改 Dockerfile 引用。[加速器说明](https://help.aliyun.com/zh/acr/user-guide/accelerate-the-pulls-of-docker-official-images)
 
-沿用已有 ACR 个人版，其定位为开发测试、不提供 SLA；需要生产可用性保障时再选择仓库等级。[版本说明](https://help.aliyun.com/zh/acr/product-overview/differences-between-personal-edition-instances-and-enterprise-edition-instances) 为兼容个人版，构建关闭 provenance/SBOM，测试后推同一镜像，部署固定 digest。发布目录名包含序号、重跑次数和 SHA，成功发布文件不会被重跑覆盖。
+沿用已有 ACR 个人版，其定位为开发测试、不提供 SLA；需要生产可用性保障时再选择仓库等级。[版本说明](https://help.aliyun.com/zh/acr/product-overview/differences-between-personal-edition-instances-and-enterprise-edition-instances) 为兼容个人版，构建关闭 provenance/SBOM，测试后推同一镜像，部署固定 digest。源码检出到准确 SHA，镜像固定 digest，避免拿到同名标签的其他版本。
 
-发布、源码、备份目前不自动删除。定期下载备份并检查磁盘空间。数据库跨版本迁移和灾难恢复需要人工安排，不能靠镜像回退恢复旧库。
+备份目前不自动删除，镜像缓存也需按需清理。定期下载备份并检查磁盘空间。数据库跨版本迁移和灾难恢复需要人工安排，不能靠镜像回退恢复旧库。
 
 本地镜像验证（维护者执行）：
 
@@ -94,3 +92,9 @@ BUILD_SHA="$BUILD_SHA" BACKEND_IMAGE=c156-backend:test FRONTEND_IMAGE=c156-front
 ```
 
 使用临时库和随机密码，检查 API 登录、读写、重建后持久化和退出。HTTP 检查手动发送 Secure Cookie；浏览器 HTTPS 行为在第 6 步人工确认。
+
+## 简化后的发布行为
+
+不再使用 releases、current、previous 或 prepared。prepare_only 只更新仓库和拉取镜像，不启动网站；普通发布先做数据库快照，再 Compose 更新、可选的 Nginx 校验／重载及限时健康轮询（容器健康后最多 90 秒、间隔 5 秒，检查本机与公网前端/API 同 SHA）。失败保留现场，不自动回退或恢复数据库。日志与手动恢复见 [排错清单](TROUBLESHOOTING.md)。同目标的 Actions 串行，服务器额外使用 deploy.lock；早于已成功发布序号的任务会拒绝执行。仓库保持 detached HEAD 是正常的，每次发布会检出准确提交。
+
+Compose 的容器 healthcheck 每 10 秒持续执行；发布脚本的本机／公网轮询只在本次发布中运行，用于确认入口已提供本次 SHA，不启动额外常驻监控。
