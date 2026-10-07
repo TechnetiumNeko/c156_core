@@ -1,6 +1,6 @@
 # Docker Compose、Nginx 与阿里云自动部署
 
-日期：2026-10-07。状态：部署路线已讨论确认，本文待审阅，尚未实施。
+日期：2026-10-07。状态：用户已批准，进入实施计划，尚未实施。后续补充：使用较高宿主机端口，面向朋友的 CentOS 7 服务器提供最少步骤的部署说明与排错清单；具体组件版本待只读检查确认。
 
 ## 1. 目标与用户确认
 
@@ -14,8 +14,11 @@ Vue 与 FastAPI 已完成最小前后端闭环。本阶段为它们提供 Docker
 - 使用经典 Certbot 自动申请与续签证书，不使用 Caddy。
 - SQLite 与资产文件必须落在服务器可直接访问的目录，方便下载及备份。
 - 阿里云镜像地址、网络配置、GitHub Variables/Secrets 和服务器配置要有操作文档。
+- 宿主机应用端口默认 127.0.0.1:28156，可配置；公网 Nginx 仍使用 80/443，容器内部端口不要求对应高位端口。
+- 面向朋友服务器交付，尽量减少手工配置。GitHub/ACR 凭据配置由项目维护者完成，朋友只处理首次服务器准备、域名/证书及数据引导。
+- 用户已确认朋友服务器为 CentOS 7，覆盖此前暂按 Ubuntu/Debian 的假设。不能将 Ubuntu apt/snap 安装说明作为目标服务器步骤。
 
-实际域名、ECS 地址、区域、ACR 地址、部署账号与安装路径通过配置提供；设计与仓库不保存用户凭据。默认按 Linux/systemd、Docker Engine + Compose v2、已有主机 Nginx 设计。自定义 Nginx 安装路径作为安装参数，不替换它的全局配置。
+实际域名、ECS 地址、区域、ACR 地址、部署账号与安装路径通过配置提供；设计与仓库不保存用户凭据。目标是 CentOS 7/systemd 和已有主机 Nginx。Docker/Compose、内核、Certbot 现有版本需先检查；不能假设最新 Docker 安装包支持该系统，也不能仅凭容器构建通过宣称目标宿主机兼容。自定义 Nginx 安装路径作为安装参数，不替换它的全局配置。
 
 ## 2. 运行拓扑与选择
 
@@ -24,7 +27,7 @@ Vue 与 FastAPI 已完成最小前后端闭环。本阶段为它们提供 Docker
 ```text
 浏览器 HTTPS
   → ECS 现有 Nginx：TLS、ACME 验证目录、项目站点配置
-    → 127.0.0.1:8080：frontend 容器（Nginx + Vue 构建产物）
+    → 127.0.0.1:28156：frontend 容器（Nginx + Vue 构建产物）
       ├─ 静态文件
       └─ /api/* → backend:8001（FastAPI）
                          ↓
@@ -35,7 +38,7 @@ frontend 的 Nginx 是镜像内的简单静态服务和 API 代理。主机 Ngin
 
 相较将 Vue 产物解包到主机，本方案增加一个轻量运行容器，但前后端镜像可以按同一提交版本发布和回退。相较将公网 Nginx 整体迁入 Compose，本方案保留现有服务器管理边界。
 
-Compose 只发布 frontend 到主机 loopback，默认 127.0.0.1:8080；backend 不发布宿主机端口。应用入口配置、镜像引用、数据目录和项目网络由同一个 Compose 文件管理。Certbot、主机 Nginx 和证书定时任务属于主机设施，不在每次应用升级中重建。
+Compose 只发布 frontend 到主机 loopback，默认 127.0.0.1:28156；backend 不发布宿主机端口。高位端口仍需在首次准备时检测是否占用；改变端口时同步更新 Compose、主机 conf 与健康检查，不能自动跳到一个未记录的端口。应用入口配置、镜像引用、数据目录和项目网络由同一个 Compose 文件管理。Certbot、主机 Nginx 和证书定时任务属于主机设施，不在每次应用升级中重建。
 
 本阶段使用单 backend 实例、单 Uvicorn worker；升级允许短暂停顿，不承诺零停机。不引入 Kubernetes、Redis、云数据库或资产上传功能。
 
@@ -98,6 +101,8 @@ Compose 只发布 frontend 到主机 loopback，默认 127.0.0.1:8080；backend 
 
 使用 CI 传送的确定提交发布包，不在 ECS 运行 git pull 或 reset --hard 去追随最新 main；配置、镜像、脚本必须属于同一提交。同步范围只包含该版本发布文件，不能在整个部署根执行 rsync --delete。模板文件不能直接作为线上 conf 的软链接；安装的是经过渲染并校验的独立文件，避免同步模板时覆盖真实域名。
 
+用户关心服务器是否需要保留代码以便应急：GitHub Actions 检出并构建确切提交，同时将该提交的已跟踪源码归档 source.tar.gz 随发布包送到服务器。源码归档供查看和排查，不参与正常启动，不包含 .git、运行数据或未跟踪凭据。服务器因此有对应版本代码，但正常自动部署不依赖它再访问 GitHub，也不额外要求配置 VPS→GitHub 密钥。文档提供按明确 SHA 手动获取源码的可选应急方法。
+
 配置更新顺序：保留上一份项目配置 → 原子安装候选 conf → 对完整主机配置执行 nginx -t → 成功才 reload。校验失败时恢复原项目 conf，不 reload，部署报失败。reload 后进行有超时的 HTTP/HTTPS 验证；失败时恢复上一份项目配置与应用镜像，不修改业务数据。
 
 不声称多个容器切换与 Nginx reload 具有跨进程事务原子性。部署状态记录前后端 digest、站点配置版本和完成状态；回退操作可定位上一份成功发布。首次部署没有上一版本时明确失败并保留数据及诊断，不伪造回滚成功。
@@ -157,6 +162,16 @@ HTTP webroot 验证无需 AliDNS API 凭据。本阶段无需额外阿里云 Acc
 
 不要求用户将私钥、密码或其他秘密粘贴到聊天或提交到 Git。
 
+### 朋友服务器的最简交接
+
+- 提供 deploy/README.md：按顺序执行的首次准备、配置、启动、初始化管理员、确认成功和后续更新步骤；必要步骤与可选配置分开。
+- 提供 deploy/TROUBLESHOOTING.md：按实际报错/症状索引，给出要执行的诊断命令、预期现象和下一步，不要求先理解项目架构。
+- 一份服务器配置文件，必填项集中；宿主机端口、目录、内部网络及应用 UID/GID有合理默认值，首次准备明确检测或生成，不让使用者在多处重复填写。
+- 一条共用部署入口供 CI 与人工更新；首次准备是独立入口，不让日常部署执行初始化、软件安装或改写其他站点。
+- 主机缺少 Docker/Compose、Nginx 或 Certbot 时，给出明确组件检查及对应安装步骤；不以通用一键脚本盲目覆盖已有 Nginx 安装和配置。
+- CentOS 7 文档先列 uname -r、Docker/Compose、Nginx、Certbot 版本检查。保留已有可用组件，不自动升级系统/内核、替换全局 yum 源、关闭 SELinux/firewalld 或停止其他站点；缺少组件时根据检查结果给出经过核对的安装路径。若 Certbot 主机安装不适用，容器化 Certbot 是需要明确选择的备选，不能静默变更已确认边界。
+- 发布时一并留存确切提交源码与版本记录；朋友不必在服务器安装 Node/Python 开发工具链或掌握镜像构建流程。
+
 ## 10. 验证范围
 
 - 使用临时数据库与临时宿主机 bind mount 构建/启动 Compose，验证 frontend → backend 登录、读写、退出，重建容器后内容仍在。
@@ -182,6 +197,9 @@ HTTP webroot 验证无需 AliDNS API 凭据。本阶段无需额外阿里云 Acc
 - Docker 构建后测试再推送：https://docs.docker.com/build/ci/github-actions/test-before-push/
 - GitHub 部署并发：https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency
 - 阿里云域名上线前期条件：https://help.aliyun.com/zh/icp-filing/basic-icp-service/user-guide/overview/
+- CentOS 7 生命周期：https://www.centos.org/centos-linux/
+- Docker 当前 CentOS 支持范围：https://docs.docker.com/engine/install/centos/
+- Certbot 安装方式：https://eff-certbot.readthedocs.io/en/stable/install.html
 
 ## 12. 参考已有项目（2026-10-07 只读检查）
 
