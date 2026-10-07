@@ -35,11 +35,11 @@
 
 **Interfaces:** ServerServices 增加 `accounts: AccountService` 与 `access: AccessService`，共享已有 Database。`session_identity(request)` 返回经过会话与 CSRF 校验的 RequestIdentity；严格 body 依赖复用 read_json_object/read_query/validate_body。接口及字段逐项遵循 spec 中 HTTP 表。
 
-- [ ] 在现有真实数据库 fixture 上增加管理生命周期用例：管理员创建账号、匿名激活、普通用户读取自己的会话、修改显示名；普通用户管理账号返回 403；客户端伪造角色／身份未知字段返回 422。
-- [ ] 增加改密用例：旧会话失效、成功响应删除 Cookie、旧密码不能重新登录、新密码可以登录；成员 editor 能新建但不能修改成员角色；站点管理员非工作区成员不能管理成员。
-- [ ] 增加文件用例：新建文档与文件夹、改名后正文与 revision_id 不变、过期结构版本返回 409、无 CSRF 写入返回 403；准备目录删除后新增子节点，旧 subtree_token 删除返回 409且内容仍存在。
-- [ ] 分组注册同步路由，直接调用应用服务；新增 strict schemas 和公开序列化。账号启停及角色操作仅允许声明的路径，不使用任意 getattr 动态执行。所有版本采用 StrictInt，enabled/recursive 采用 StrictBool。
-- [ ] 运行 `python -m unittest tests.test_server_api tests.test_server_management tests.test_server_transport tests.test_server_production -q`（若用例全部扩展原文件则移除 management 模块项）；通过后提交本任务文件。
+- [x] 在现有真实数据库 fixture 上增加管理生命周期用例：管理员创建账号、匿名激活、普通用户读取自己的会话、修改显示名；普通用户管理账号返回 403；客户端伪造角色／身份未知字段返回 422。
+- [x] 增加改密用例：旧会话失效、成功响应删除 Cookie、旧密码不能重新登录、新密码可以登录；成员 editor 能新建但不能修改成员角色；站点管理员非工作区成员不能管理成员。
+- [x] 增加文件用例：新建文档与文件夹、改名后正文与 revision_id 不变、过期结构版本返回 409、无 CSRF 写入返回 403；准备目录删除后新增子节点，旧 subtree_token 删除返回 409且内容仍存在。
+- [x] 分组注册同步路由，直接调用应用服务；新增 strict schemas 和公开序列化。账号启停及角色操作仅允许声明的路径，不使用任意 getattr 动态执行。所有版本采用 StrictInt，enabled/recursive 采用 StrictBool。
+- [x] 运行 `python -m unittest tests.test_server_api tests.test_server_management tests.test_server_transport tests.test_server_production -q`（若用例全部扩展原文件则移除 management 模块项）；通过后提交本任务文件。
 
 ## Task 2：前端请求与操作状态
 
@@ -47,11 +47,11 @@
 
 **Interfaces:** ApiClient 提供 activate/resetPassword/changeProfile/changePassword/listUsers/createUser/userAction/setSiteAdmin/readMembers/addMember/setMemberRole/removeMember/createFolder/createDocument/renameNode/prepareDelete/deleteNode。公开返回值分别是 UserResponse、AccountGrant、WorkspaceResponse、NodeResponse、DocumentResponse、DeletePlan、OkResponse。AccountGrant 含 user/token/purpose/expires_at；DeletePlan 含 object_id/version/items/subtree_token。管理协调层绑定 session epoch，身份变化清除列表与一次性凭据。
 
-- [ ] 扩展客户端用例，断言新增请求的真实 public path、body、nonce/CSRF 与严格响应解析；迟到管理成功／401不能写入新会话；changePassword 成功立即清除旧证明。
-- [ ] 为目录刷新和草稿协调增加行为用例：刷新受影响父目录保留其展开状态；修改文档名称不替换正文或修订；改密后暂停编辑并保留草稿，匿名恢复失败可重试。
-- [ ] 实现 schema validators 与上述 API 方法，复用 request；不自动重试写请求。SessionState 暴露安全的 profile 更新与已撤销会话恢复操作，保存 workspace_role 供入口展示，后台仍执行真实授权。
-- [ ] 文件操作层统一确定新建父目录，确认丢弃时复用既有草稿流程；目录删除计划与最终删除严格一一绑定；成功删除后清理相关缓存与当前选中，失败保留草稿。
-- [ ] 运行 `npm --prefix frontend test`、`npm --prefix frontend run typecheck`；通过后提交本任务文件。
+- [x] 扩展客户端用例，断言新增请求的真实 public path、body、nonce/CSRF 与严格响应解析；迟到管理成功／401不能写入新会话；changePassword 成功立即清除旧证明。
+- [x] 为目录刷新和草稿协调增加行为用例：刷新受影响父目录保留其展开状态；修改文档名称不替换正文或修订；改密后暂停编辑并保留草稿，匿名恢复失败可重试。
+- [x] 实现 schema validators 与上述 API 方法，复用 request；不自动重试写请求。SessionState 暴露安全的 profile 更新与已撤销会话恢复操作，保存 workspace_role 供入口展示，后台仍执行真实授权。
+- [x] 文件操作层统一确定新建父目录，确认丢弃时复用既有草稿流程；目录删除计划与最终删除严格一一绑定；成功删除后清理相关缓存与当前选中，失败保留草稿。
+- [x] 运行 `npm --prefix frontend test`、`npm --prefix frontend run typecheck`；通过后提交本任务文件。
 
 ## Task 3：CodeMirror 实时预览与阅读渲染
 
@@ -59,12 +59,12 @@
 
 **Interfaces:** MarkdownEditor props 为 `modelValue: string`、`documentId: string`、`readonly: boolean`、`sourceMode: boolean`，emit `update:modelValue(text: string)`。MarkdownPreview 接收 `source: string`，渲染前净化。`livePreview` 扩展由 Markdown syntaxTree 与当前选区生成 Decoration；commands 对 EditorView 执行真实文本事务。
 
-- [ ] 安装兼容现有 Node/Vite 的 CodeMirror state/view/commands/language/lang-markdown 和必要解析依赖、Marked、DOMPurify，锁定版本；复用已有 Node 测试环境，不在仓库添加独立验证项目。
-- [ ] 添加关键行为测试：非活动粗体／标题标记隐藏，选区相交时显露；选区跨行时不隐藏范围内标记；展示构建不修改 doc.toString；工具栏操作可以撤销；只读不能通过用户编辑事务写入。
-- [ ] 建立 CodeMirror 一次性 mount 与 destroy，watch 文档身份与外部正文，用户回传相同正文不再次替换；文档切换重新建立撤销历史，保存回传同文档保持用户继续输入。支持视图 readOnly/editable 重配置与组合输入保护。
-- [ ] 实现标题、强调、删除线、列表、任务项、引用、链接和代码样式；活动语法显露源码。表格与未知语法保留源码，独立阅读模式显示 GFM 表格；链接不在编辑中自动导航。
-- [ ] 阅读渲染复用旧预览的禁止标签／属性、链接白名单和图片 alt 占位。增加恶意脚本、危险链接、代码块与中文标题的真实渲染净化测试，利用现有外部 jsdom（如需路径则通过环境变量指定）。
-- [ ] 运行相关前端测试、typecheck、build，通过后提交本任务文件。
+- [x] 安装兼容现有 Node/Vite 的 CodeMirror state/view/commands/language/lang-markdown 和必要解析依赖、Marked、DOMPurify，锁定版本；复用已有 Node 测试环境，不在仓库添加独立验证项目。
+- [x] 添加关键行为测试：非活动粗体／标题标记隐藏，选区相交时显露；选区跨行时不隐藏范围内标记；展示构建不修改 doc.toString；工具栏操作可以撤销；只读不能通过用户编辑事务写入。
+- [x] 建立 CodeMirror 一次性 mount 与 destroy，watch 文档身份与外部正文，用户回传相同正文不再次替换；文档切换重新建立撤销历史，保存回传同文档保持用户继续输入。支持视图 readOnly/editable 重配置与组合输入保护。
+- [x] 实现标题、强调、删除线、列表、任务项、引用、链接和代码样式；活动语法显露源码。表格与未知语法保留源码，独立阅读模式显示 GFM 表格；链接不在编辑中自动导航。
+- [x] 阅读渲染复用旧预览的禁止标签／属性、链接白名单和图片 alt 占位。增加恶意脚本、危险链接、代码块与中文标题的真实渲染净化测试，利用现有外部 jsdom（如需路径则通过环境变量指定）。
+- [x] 运行相关前端测试、typecheck、build，通过后提交本任务文件。
 
 ## Task 4：统一主题、登录和账号页面
 
@@ -72,11 +72,11 @@
 
 **Interfaces:** 根 NConfigProvider 使用 theme.ts 的 shared tokens，UnoCSS 引用同一 CSS 变量。页面 props/emits 使用 Task 2 的 User、AccountGrant、WorkspaceResponse，业务请求从协调层统一调用。App 保留现有会话失败处理与 editor 实例。
 
-- [ ] 安装 Naive UI 与 UnoCSS，接入 presetWind3、Vite 插件和虚拟样式导入；使用按需显式组件 import，不加全局 reset 或额外框架。
-- [ ] 建设统一浅色主题、顶栏、登录卡片与桌面／窄屏布局。登录包含登录、激活、重置入口，提交后清空密码／凭据；等待 bootstrap、nonce 或未初始化时不能错误提交。
-- [ ] 建设个人页面、站点账号列表及操作、成员管理页面，分别显示角色并按身份提供入口。敏感操作确认，凭据可复制／清除且身份变化清除。撤销自己的管理权后同步当前身份和入口。
-- [ ] 页面切换保留工作台和 CodeMirror 实例；持久展示请求错误，冲突后刷新版本供用户再次确认，不静默重复写入。
-- [ ] 运行前端既有测试、typecheck、build，不为外观新增测试；通过后提交本任务文件。
+- [x] 安装 Naive UI 与 UnoCSS，接入 presetWind3、Vite 插件和虚拟样式导入；使用按需显式组件 import，不加全局 reset 或额外框架。
+- [x] 建设统一浅色主题、顶栏、登录卡片与桌面／窄屏布局。登录包含登录、激活、重置入口，提交后清空密码／凭据；等待 bootstrap、nonce 或未初始化时不能错误提交。
+- [x] 建设个人页面、站点账号列表及操作、成员管理页面，分别显示角色并按身份提供入口。敏感操作确认，凭据可复制／清除且身份变化清除。撤销自己的管理权后同步当前身份和入口。
+- [x] 页面切换保留工作台和 CodeMirror 实例；持久展示请求错误，冲突后刷新版本供用户再次确认，不静默重复写入。
+- [x] 运行前端既有测试、typecheck、build，不为外观新增测试；通过后提交本任务文件。
 
 ## Task 5：文件菜单、编辑工作台集成与交付验证
 
@@ -84,13 +84,17 @@
 
 **Interfaces:** 目录行使用 Task 2 的 node access.actions 决定操作显示，FileActions 输出明确的操作和目标 Node，不推导当前身份。DocumentEditor 消费 Task 3 MarkdownEditor 并继续向 EditorState 发 edit 事件；源码／阅读是次级展示选项。
 
-- [ ] 接入目录右键和可见菜单按钮，根新建、文件／文件夹的目标位置、重命名输入和删除确认均调用真实接口；目录刷新失败与写入成功分别说明，避免再次重复创建。
-- [ ] 删除当前文档或包含当前文档的目录之前执行草稿保护；删除计划 items 用于判断包含关系，旧计划冲突要求重新确认；同名冲突保留输入供修改。
-- [ ] 集成格式工具栏、默认实时预览、次级源码／阅读菜单、只读阅读、冲突参考与状态提示。外层加载／保存忙碌不能无故禁止正文输入，保留既有保存禁用条件。
-- [ ] 执行 `npm --prefix frontend test`、`npm --prefix frontend run typecheck`、`npm --prefix frontend run build`；执行相关 Python adapter、服务与架构测试，若无未决风险不追加无关全套验证。
-- [ ] 用独立临时库实际启动 Vite 5173 和 FastAPI 8001，检查 Vue/UnoCSS 模块、/api/healthz、bootstrap。若可用浏览器，仅截图查看桌面与窄屏；不运行自动登录／保存／右键交互。
-- [ ] 记录命令、结果、截图和未验证项，更新开发文档说明接口分组、主题、实时预览维护位置；执行 git diff --check，提交实现并进行最终代码审阅。
+- [x] 接入目录右键和可见菜单按钮，根新建、文件／文件夹的目标位置、重命名输入和删除确认均调用真实接口；目录刷新失败与写入成功分别说明，避免再次重复创建。
+- [x] 删除当前文档或包含当前文档的目录之前执行草稿保护；删除计划 items 用于判断包含关系，旧计划冲突要求重新确认；同名冲突保留输入供修改。
+- [x] 集成格式工具栏、默认实时预览、次级源码／阅读菜单、只读阅读、冲突参考与状态提示。外层加载／保存忙碌不能无故禁止正文输入，保留既有保存禁用条件。
+- [x] 执行 `npm --prefix frontend test`、`npm --prefix frontend run typecheck`、`npm --prefix frontend run build`；执行相关 Python adapter、服务与架构测试，若无未决风险不追加无关全套验证。
+- [x] 用独立临时库实际启动 Vite 5173 和 FastAPI 8001，检查 Vue/UnoCSS 模块、/api/healthz、bootstrap。若可用浏览器，仅截图查看桌面与窄屏；不运行自动登录／保存／右键交互。
+- [x] 记录命令、结果、截图和未验证项，更新开发文档说明接口分组、主题、实时预览维护位置；执行 git diff --check，提交实现并进行最终代码审阅。
 
 ## 执行方式建议
 
 建议本会话直接实施，任务之间按上述顺序推进。接口与草稿状态关联较紧，集中实现可以减少交接成本。用户若选择委派，子任务只执行此已确认路线，并明确文件所有权，不授权新的架构选择。
+
+## 执行记录
+
+用户选择直接实施，并要求早期原型快速推进、减少新增测试。按这一要求，保留四个实际 FastAPI 用例和一个 CodeMirror 装饰用例，其他新增行为依靠已有状态测试、类型检查、构建及临时真实运行检查，不新增重复的前端操作测试框架。分组实现集中提交，用户现有身份设计文档未改动。结果见 [验证记录](../../verification/2026-10-08-vue-workbench.md)。
