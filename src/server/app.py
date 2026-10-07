@@ -11,6 +11,8 @@ from ..core.errors import ContentError
 from ..core.models import ContentScope
 from ..services.content import ContentService
 from ..services.identity import IdentityService
+from ..services.accounts import AccountService
+from ..services.access import AccessService
 from ..services.unit_of_work import ApplicationUnitOfWork
 from ..storage import Database
 from ..storage.errors import StorageError
@@ -26,6 +28,8 @@ class ServerServices:
     identity: IdentityService
     scope: ContentScope
     nonce: str
+    accounts: AccountService
+    access: AccessService
 
 
 def _services(config):
@@ -42,7 +46,7 @@ def _services(config):
             f'已有空库的首个管理员：python -m src.identity bootstrap-admin --database {path} '
             '--login-name admin --display-name 管理员'
         ) from error
-    return ServerServices(ContentService(database), IdentityService(database), scope, secrets.token_urlsafe(32))
+    return ServerServices(ContentService(database), IdentityService(database), scope, secrets.token_urlsafe(32), AccountService(database), AccessService(database))
 
 
 def create_app(config: ServerConfig) -> FastAPI:
@@ -60,4 +64,9 @@ def create_app(config: ServerConfig) -> FastAPI:
     app.add_middleware(UnexpectedErrorBoundary)
     app.add_middleware(TransportGuard, config=config)
     app.include_router(router)
+    from .routes_accounts import router as accounts_router
+    from .routes_members import router as members_router
+    from .routes_nodes import router as nodes_router
+    for extra_router in (accounts_router, members_router, nodes_router):
+        app.include_router(extra_router)
     return app
