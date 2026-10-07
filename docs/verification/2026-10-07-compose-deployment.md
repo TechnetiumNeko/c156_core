@@ -63,3 +63,11 @@
 - 51 个文档内部链接／锚点及 18 段 Bash 语法通过，git diff --check 通过。
 
 未重新执行应用全套测试或镜像业务 smoke：本次不修改应用、Dockerfile、Compose 或服务器部署脚本，相关证据沿用上文。未创建真实 GitHub Environments、填写 Secrets 或执行 ACR/ECS 发布；GitHub 云端 artifact 传输、部分重跑及 Environment 凭据选择仍需首次实际运行确认。临时本地引擎在验证后停止。
+
+## 最新调整：Repository TEST_/PROD_ 方案
+
+用户确认改用 Repository 级 Variables/Secrets，避免个人仓库 Environment 配置仅限所有者的权限障碍。已删除部署 job 的 environment 绑定，全部参数通过所选目标的 TEST_／PROD_ 名称读取；保留 main 自动 test、手动 prod、独立并发组及生产者 artifact ID。
+
+独立只读审阅未发现新的具体缺陷，确认没有跨目标或旧无前缀配置回退。actionlint 搭配 shellcheck 通过；直接运行当前配置检查 Bash 的 7 个场景通过（test/prod 启用、自动未启用、手动 prod 未启用、缺失 prod SSH、缺失 test host、非法目标），缺失提示显示正确的完整 Repository 参数名。51 个文档链接／锚点及 18 段 Bash 语法通过，git diff --check 通过。
+
+本次未修改应用或镜像传递／服务器部署逻辑，未重复应用、镜像或回退检查。未填写真实 Repository 值、执行 GitHub 云端发布、连接 ACR/ECS。维护者需按照最新配置表填写前缀项；旧阶段的 Environment 配置说明已被当前方案替代。

@@ -2,7 +2,7 @@
 
 第一次部署按下面 **1 → 6** 做。每步看到“正常结果”再继续；报错就点该步的排错链接。以后更新由 GitHub Actions 完成。
 
-本文使用 `/srv/c156` 和 `28156`，适用于已有 Docker、Compose、Nginx 和证书面板的服务器。你的 Ubuntu ECS 使用 `test`，朋友服务器使用 `prod`；两台分别执行同一套步骤，无需安装 Python、Node 或 Certbot。
+本文使用 `/srv/c156` 和 `28156`，适用于已有 Docker、Compose、Nginx 和证书面板的服务器。你的 Ubuntu ECS 使用 `test`，朋友服务器使用 `prod`；GitHub 参数放在 Repository，分别以 TEST_／PROD_ 开头；两台分别执行同一套步骤，无需安装 Python、Node 或 Certbot。
 
 ## 开始前：维护者把东西准备好
 

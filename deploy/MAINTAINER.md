@@ -10,39 +10,40 @@
 
 **A. ACR 创建两个仓库。** 在已有个人版实例中选好命名空间，创建 `c156-backend`、`c156-frontend`。复制实际公网 registry 域名。
 
-**B. GitHub 建立两个独立 Environment。** 到 **Settings → Environments**，分别创建 `test` 和 `prod`。
+**B. GitHub 使用 Repository 参数。** 到 **Settings → Secrets and variables → Actions**。在 **Variables** 中点 New repository variable，在 **Secrets** 中点 New repository secret。无需创建 GitHub Environment。
 
-| Environment | 用途 | 触发方式 |
+| 部署目标 | 用途 | 触发方式 |
 | --- | --- | --- |
 | `test` | 你的 Ubuntu ECS | 推送 main 自动发布；也可手动选择 test |
 | `prod` | 朋友的服务器 | 仅手动 Run workflow 选择 prod |
 
-**在每个 Environment 内分别填完整的 Variables 和 Secrets。** 参数名相同，值属于对应服务器。服务器的 config.env 也各自保存自己的域名、端口和目录，不共享数据库或资产。
+**按下表的完整名称填写。** TEST_ 对应你的服务器，PROD_ 对应朋友服务器；不要省略前缀。服务器 config.env 仍各自保存自己的域名、端口和目录，数据也分别保留。
 
-| 类型 | 名称 | test 填什么 | prod 填什么 |
+| 类型 | test 参数名 | prod 参数名 | 填什么 |
 | --- | --- | --- | --- |
-| Variable | `DEPLOY_ENVIRONMENT` | `test` | `prod` |
-| Variable | `DEPLOY_ENABLED` | 准备就绪后 `true` | 准备就绪后 `true` |
-| Variable | `ACR_REGISTRY` | 本环境 ACR 公网域名，不带协议或路径 | 本环境 ACR 公网域名 |
-| Variable | `ACR_NAMESPACE` | 本环境已创建的命名空间 | 本环境已创建的命名空间 |
-| Variable | `DEPLOY_HOST` | 你的 ECS 公网 IP／SSH 域名 | 朋友服务器公网 IP／SSH 域名 |
-| Variable | `DEPLOY_PORT` | 你的 SSH 端口，通常 `22` | 朋友的 SSH 端口 |
-| Variable | `DEPLOY_USER` | 你的部署账号 | 朋友执行手册的账号 |
-| Variable | `DEPLOY_ROOT` | `/srv/c156` | `/srv/c156` |
-| Secret | `ACR_USERNAME` | 本环境 ACR 登录用户名 | 本环境 ACR 登录用户名 |
-| Secret | `ACR_PASSWORD` | 本环境 ACR 登录密码／访问凭据 | 本环境 ACR 登录密码／访问凭据 |
-| Secret | `DEPLOY_SSH_KEY` | 你的服务器专用 SSH 私钥 | 朋友服务器专用 SSH 私钥 |
-| Secret | `DEPLOY_KNOWN_HOSTS` | 核对指纹后的你的主机记录 | 核对指纹后的朋友主机记录 |
+| Variable | `TEST_DEPLOY_ENABLED` | `PROD_DEPLOY_ENABLED` | 对应服务器准备就绪后填 `true` |
+| Variable | `TEST_ACR_REGISTRY` | `PROD_ACR_REGISTRY` | ACR 公网域名，不带协议或路径 |
+| Variable | `TEST_ACR_NAMESPACE` | `PROD_ACR_NAMESPACE` | 已创建的命名空间 |
+| Variable | `TEST_DEPLOY_HOST` | `PROD_DEPLOY_HOST` | 对应服务器公网 IP／SSH 域名 |
+| Variable | `TEST_DEPLOY_PORT` | `PROD_DEPLOY_PORT` | 对应 SSH 端口，通常 `22` |
+| Variable | `TEST_DEPLOY_USER` | `PROD_DEPLOY_USER` | 在对应服务器执行手册的账号 |
+| Variable | `TEST_DEPLOY_ROOT` | `PROD_DEPLOY_ROOT` | `/srv/c156` |
+| Secret | `TEST_ACR_USERNAME` | `PROD_ACR_USERNAME` | ACR 登录用户名 |
+| Secret | `TEST_ACR_PASSWORD` | `PROD_ACR_PASSWORD` | ACR 登录密码／访问凭据 |
+| Secret | `TEST_DEPLOY_SSH_KEY` | `PROD_DEPLOY_SSH_KEY` | 对应服务器专用 SSH 私钥 |
+| Secret | `TEST_DEPLOY_KNOWN_HOSTS` | `PROD_DEPLOY_KNOWN_HOSTS` | 核对指纹后的对应主机记录 |
 
-两环境使用同一个 ACR 时，可以分别填相同的 ACR 值；SSH、主机、域名和数据始终按服务器分开。两个部署账号都需要 Docker、项目目录以及对应 Nginx 操作权限。
+两目标使用同一个 ACR 时，可在两组中分别填相同的 ACR 值；主机、SSH 和数据按服务器分开。两个部署账号都需要 Docker、项目目录以及对应 Nginx 操作权限。
 
-`DEPLOY_ENVIRONMENT` 必须与选定环境匹配，防止旧配置被误用于新目标。`DEPLOY_ENABLED` 未设为 true 时，main 的自动 test 发布不推镜像、不改服务器；手动发布会明确报“环境未启用”。
+TEST_DEPLOY_ENABLED 未设为 true 时，main 自动发布不会推镜像或更改服务器。手动选 test／prod 时，对应开关未启用会明确报错。选 prod 后如果 PROD_ 参数缺失，会报缺失项，**不会借用 TEST_ 参数**。
 
-**迁移旧配置：** 将原来 Repository 级的上述 Variables／Secrets 移到对应 Environment，并删除 Repository 级同名项；GitHub 会继承上层同名值，不能只复制新配置而保留旧值。旧 `production` Environment 不再被当前工作流使用，确认没有其他工作流依赖后清理；不要重跑仍引用旧配置的历史工作流。
+**如果之前已经填过配置：** 在 Repository 新建上表的 TEST_／PROD_ 参数。旧无前缀参数和 Environment 参数不会被新工作流读取；确认其他工作流不需要后，再清理旧项。无需 DEPLOY_ENVIRONMENT 标记。不要重跑仍使用旧方案的历史工作流。
+
+所有凭据由仓库协作者统一管理，TEST_／PROD_ 是配置分组；当前不使用 Environment 审批或访问隔离。prod 的发布入口仍是手动选择。
 
 SSH 指纹必须在可信终端核对，不在流水线临时扫描后直接信任。非 22 端口的 known_hosts 用 `[host]:port` 格式。公钥先加入各自服务器对应账号的 authorized_keys。密码、私钥不要放进仓库或服务器 config.env。
 
-**手动发布怎么选：** Actions → Test, build and deploy → Run workflow，分支 main，选 `target_environment=test` 或 `prod`。首次拉镜像勾选 `prepare_only`；完成对应服务器初始化和面板配置后，再运行同环境且不勾选 prepare_only。两台的 prepared/current、发布序号和回退记录分别保存在各自服务器。
+**手动发布怎么选：** Actions → Test, build and deploy → Run workflow，分支 main，选 `target_environment=test` 或 `prod`；这个字段只选择部署目标，不要求创建同名 GitHub Environment。首次拉镜像勾选 `prepare_only`；完成对应服务器初始化和面板配置后，再运行同环境且不勾选 prepare_only。两台的 prepared/current、发布序号和回退记录分别保存在各自服务器。
 
 每次运行都会检查、构建和测试本次 main 提交的镜像，通过 artifact 将同一产物交给选定环境推送和部署。prod 手动发布前，核对当前 main 提交已在 test 验证；main 有新提交时，应先验证新版本。镜像包只在该次 workflow 的任务间传递，不包含部署凭据，保留 3 天。
 

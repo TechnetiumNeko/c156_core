@@ -221,3 +221,9 @@ HTTP webroot 验证无需 AliDNS API 凭据。本阶段无需额外阿里云 Acc
 各环境分别设置所有 ACR、SSH Variables/Secrets，参数名相同，值各自独立；DEPLOY_ENVIRONMENT 必须匹配所选环境。旧 Repository 同名配置应迁移并删除，以避免 GitHub 上层值继承。服务器 config.env、数据、证书和发布状态分别保留在各自主机。
 
 同一次 workflow 构建并 smoke 后，通过 artifact 将已测试镜像交给选定环境发布，不在部署任务重新构建。prod 手动运行使用该次 main 提交，维护者在发布前确认该提交已在 test 验证。artifact 使用生产者输出的 ID 下载，兼容仅重跑失败的部署任务；两个环境使用独立的部署并发组。
+
+## 最新确认：Repository 前缀配置
+
+上游是个人仓库，当前协作者能配置 Repository Secrets/Variables，但不能配置 GitHub Environments。用户明确选择 Repository 方案。此确认替代前述 Environment 级配置方案；触发规则仍为 main 自动 test、prod 手动选择。
+
+所有部署参数在 Repository 中按 TEST_／PROD_ 前缀存储，工作流根据选定目标索引对应名称，不使用 GitHub Environment，不读取旧无前缀项，不在 PROD_ 缺失时借用 TEST_。因此不再需要 DEPLOY_ENVIRONMENT 标记。两组凭据属于仓库统一管理范围，前缀用于分组，不提供 Environment 的审批或访问隔离。具体名称以 deploy/MAINTAINER.md 为准。
