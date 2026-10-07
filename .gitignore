@@ -52,3 +52,18 @@ Thumbs.db
 # Frontend dependencies and compiler caches
 node_modules/
 *.tsbuildinfo
+
+# Server deployment configuration and runtime state in a cloned checkout
+/config.env
+/releases/
+/backups/
+/assets/
+/nginx/
+/current
+/previous
+/prepared
+/deploy.lock
+/sequence
+/sequence.new.*
+/.current.before.*
+/.previous.before.*

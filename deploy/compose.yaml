@@ -1,0 +1,50 @@
+name: c156
+services:
+  backend:
+    image: ${BACKEND_IMAGE:?set BACKEND_IMAGE}
+    user: "${APP_UID:-10001}:${APP_GID:-10001}"
+    environment:
+      C156_DATABASE: /data/c156.sqlite
+      C156_PUBLIC_ORIGIN: https://${SITE_DOMAIN:?set SITE_DOMAIN}
+      C156_PROXY_NETWORK: ${PROXY_NETWORK:-172.30.156.0/24}
+    volumes:
+      - type: bind
+        source: ${DEPLOY_ROOT:?set DEPLOY_ROOT}/data
+        target: /data
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${DEPLOY_ROOT}/assets
+        target: /assets
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${DEPLOY_ROOT}/backups
+        target: /backups
+        bind: {create_host_path: false}
+    healthcheck:
+      test: [CMD, python, -c, "import os,urllib.request; r=urllib.request.Request('http://127.0.0.1:8001/api/healthz',headers={'Host':os.environ['C156_PUBLIC_ORIGIN'][8:]}); urllib.request.urlopen(r,timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    restart: unless-stopped
+    stop_grace_period: 30s
+    logging: {driver: json-file, options: {max-size: 10m, max-file: "3"}}
+    networks: [app]
+  frontend:
+    image: ${FRONTEND_IMAGE:?set FRONTEND_IMAGE}
+    ports: ["127.0.0.1:${APP_PORT:-28156}:8080"]
+    depends_on:
+      backend: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1:8080/build-info.json]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    restart: unless-stopped
+    stop_grace_period: 15s
+    logging: {driver: json-file, options: {max-size: 10m, max-file: "3"}}
+    networks: [app]
+networks:
+  app:
+    ipam:
+      config: [{subnet: "${PROXY_NETWORK:-172.30.156.0/24}"}]

@@ -7,6 +7,22 @@ from .transport import read_json_object, read_query
 
 router = APIRouter()
 
+@router.get('/api/healthz')
+def readiness(request: Request):
+    from ..storage import Database
+    from ..storage.errors import StorageError
+    from ..core.errors import ContentError
+    from ..services.unit_of_work import ApplicationUnitOfWork
+    from .errors import RequestError
+    config = request.app.state.config
+    try:
+        with ApplicationUnitOfWork(Database(config.database_path, busy_timeout_ms=250)).transaction() as work:
+            work.default_scope()
+    except (StorageError, ContentError, OSError, ValueError):
+        raise RequestError(503, 'unavailable', 'Service unavailable.') from None
+    return {'status': 'ok', 'build_sha': config.build_sha}
+
+
 async def login_body(request: Request):
     read_query(request)
     return validate_body(LoginBody, await read_json_object(request))

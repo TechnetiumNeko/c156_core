@@ -115,3 +115,5 @@ node --experimental-default-type=module --test tests/web/*.test.mjs
 ```
 
 前端验证使用 Node 22，实际 HTML 净化检查需额外的 jsdom；配置方法见 [工作台开发](docs/工作台开发.md#运行与验证)。旧工作台运行本身无需 Node；新工作台开发需要 Vite。新工程检查为 `npm --prefix frontend run test`、`npm --prefix frontend run typecheck`、`npm --prefix frontend run build`。浏览器验证默认只打开并截图。
+
+Docker 与自动部署见 [部署操作手册](deploy/README.md)，常见问题见 [排错清单](deploy/TROUBLESHOOTING.md)。
