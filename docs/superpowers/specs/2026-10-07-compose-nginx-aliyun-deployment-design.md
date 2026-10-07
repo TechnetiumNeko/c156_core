@@ -213,3 +213,11 @@ HTTP webroot 验证无需 AliDNS API 凭据。本阶段无需额外阿里云 Acc
 | 两项目的 deploy 入口与 ACR_*/DEPLOY_* 命名 | CI 与手动部署共用生产脚本，配置名称尽量一致；按本项目表格区分非秘密 Variables 与真正 Secrets |
 
 参考项目中的业务限流、ESA、游戏导出、SSO、数据库迁移和赛季操作均不属于本任务范围。
+
+## 后续确认：test/prod 环境划分
+
+用户后续将自己的 Ubuntu ECS 定为 test、朋友服务器定为 prod，并确认 main 自动发布 test，prod 仅手动选择发布。此确认替代正文中单个 production Environment 及 Repository 级 ACR 配置的描述。
+
+各环境分别设置所有 ACR、SSH Variables/Secrets，参数名相同，值各自独立；DEPLOY_ENVIRONMENT 必须匹配所选环境。旧 Repository 同名配置应迁移并删除，以避免 GitHub 上层值继承。服务器 config.env、数据、证书和发布状态分别保留在各自主机。
+
+同一次 workflow 构建并 smoke 后，通过 artifact 将已测试镜像交给选定环境发布，不在部署任务重新构建。prod 手动运行使用该次 main 提交，维护者在发布前确认该提交已在 test 验证。artifact 使用生产者输出的 ID 下载，兼容仅重跑失败的部署任务；两个环境使用独立的部署并发组。

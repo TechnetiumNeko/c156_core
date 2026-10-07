@@ -5,6 +5,11 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
+      target_environment:
+        description: 'Deployment target: test is your server; prod is your friend server'
+        type: choice
+        options: [test, prod]
+        default: test
       prepare_only:
         description: 'First install: only deliver and pull images; initialize library and panel before live deployment'
         type: boolean
@@ -12,7 +17,7 @@ on:
 permissions:
   contents: read
 jobs:
-  test:
+  checks:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -31,12 +36,11 @@ jobs:
         working-directory: frontend
       - run: bash -n deploy/*.sh
   images:
-    needs: test
+    needs: checks
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    outputs:
-      backend: ${{ steps.publish.outputs.backend }}
-      frontend: ${{ steps.publish.outputs.frontend }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
@@ -51,8 +55,91 @@ jobs:
           BACKEND_IMAGE: c156-backend:${{ github.sha }}
           FRONTEND_IMAGE: c156-frontend:${{ github.sha }}
         run: python3 deploy/smoke.py
+      - name: Save the tested images for the deployment job
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env: {BUILD_SHA: '${{ github.sha }}'}
+        run: |
+          mkdir -p "$RUNNER_TEMP/c156-images"
+          docker save "c156-backend:$BUILD_SHA" "c156-frontend:$BUILD_SHA" -o "$RUNNER_TEMP/c156-images/images.tar"
+          cd "$RUNNER_TEMP/c156-images"
+          sha256sum images.tar > images.sha256
+      - name: Upload tested images
+        id: upload
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: c156-images-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/c156-images/
+          retention-days: 3
+          compression-level: 0
+          if-no-files-found: error
+  deploy:
+    needs: images
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    name: Publish and deploy (${{ inputs.target_environment || 'test' }})
+    environment: ${{ inputs.target_environment || 'test' }}
+    concurrency:
+      group: c156-${{ inputs.target_environment || 'test' }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Check selected Environment configuration
+        id: config
+        env:
+          TARGET_ENVIRONMENT: ${{ inputs.target_environment || 'test' }}
+          DEPLOY_ENABLED: ${{ vars.DEPLOY_ENABLED }}
+          DEPLOY_ENVIRONMENT: ${{ vars.DEPLOY_ENVIRONMENT }}
+          ACR_REGISTRY: ${{ vars.ACR_REGISTRY }}
+          ACR_NAMESPACE: ${{ vars.ACR_NAMESPACE }}
+          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ "$TARGET_ENVIRONMENT" == test || "$TARGET_ENVIRONMENT" == prod ]]
+          if [[ "$DEPLOY_ENABLED" != true ]]; then
+            if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+              printf 'Deployment disabled: set DEPLOY_ENABLED=true in Environment %s.\n' "$TARGET_ENVIRONMENT" >&2
+              exit 1
+            fi
+            printf 'enabled=false\n' >> "$GITHUB_OUTPUT"
+            printf 'Environment %s is not enabled; no images pushed or server changed.\n' "$TARGET_ENVIRONMENT"
+            exit 0
+          fi
+          if [[ "$DEPLOY_ENVIRONMENT" != "$TARGET_ENVIRONMENT" ]]; then
+            printf 'Set DEPLOY_ENVIRONMENT=%s in the selected GitHub Environment.\n' "$TARGET_ENVIRONMENT" >&2
+            exit 1
+          fi
+          for key in ACR_REGISTRY ACR_NAMESPACE ACR_USERNAME ACR_PASSWORD DEPLOY_HOST DEPLOY_USER SSH_KEY KNOWN_HOSTS; do
+            [[ -n "${!key}" ]] || { printf 'Missing Environment parameter: %s\n' "$key" >&2; exit 1; }
+          done
+          printf 'enabled=true\n' >> "$GITHUB_OUTPUT"
+      - name: Download tested images from this run
+        if: steps.config.outputs.enabled == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.images.outputs.artifact_id }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/c156-images
+      - name: Verify and load the tested images
+        if: steps.config.outputs.enabled == 'true'
+        env: {BUILD_SHA: '${{ github.sha }}'}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/c156-images"
+          sha256sum -c images.sha256
+          docker load -i images.tar
+          for service in backend frontend; do
+            revision=$(docker image inspect "c156-$service:$BUILD_SHA" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')
+            [[ "$revision" == "$BUILD_SHA" ]]
+          done
       - name: Log in to existing ACR personal registry
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
+        if: steps.config.outputs.enabled == 'true'
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ${{ vars.ACR_REGISTRY }}
@@ -60,7 +147,7 @@ jobs:
           password: ${{ secrets.ACR_PASSWORD }}
       - name: Push the tested images, keep immutable digest references
         id: publish
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
+        if: steps.config.outputs.enabled == 'true'
         env:
           BUILD_SHA: ${{ github.sha }}
           ACR_REGISTRY: ${{ vars.ACR_REGISTRY }}
@@ -75,21 +162,11 @@ jobs:
             [[ "$digest" == "$ACR_REGISTRY/$ACR_NAMESPACE/c156-$service@sha256:"* ]]
             printf '%s=%s\n' "$service" "$digest" >> "$GITHUB_OUTPUT"
           done
-  deploy:
-    needs: images
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    environment: production
-    concurrency:
-      group: c156-production
-      cancel-in-progress: false
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Package and deliver the same commit
+        if: steps.config.outputs.enabled == 'true'
         env:
-          BACKEND_IMAGE: ${{ needs.images.outputs.backend }}
-          FRONTEND_IMAGE: ${{ needs.images.outputs.frontend }}
+          BACKEND_IMAGE: ${{ steps.publish.outputs.backend }}
+          FRONTEND_IMAGE: ${{ steps.publish.outputs.frontend }}
           DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
           DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
           DEPLOY_USER: ${{ vars.DEPLOY_USER }}

@@ -82,7 +82,7 @@ ss -H -ltn 'sport = :28157'
 | 报错 | 定位与处理 |
 | --- | --- |
 | `unauthorized`／`denied` | 核对 ACR 控制台域名、用户名、ACR 登录密码；确认命名空间和两个仓库已创建 |
-| 服务器能登录，Actions 仍登录失败 | 维护者检查 Repository 的 ACR_USERNAME／ACR_PASSWORD Secrets 和 registry Variables |
+| 服务器能登录，Actions 仍登录失败 | 维护者检查 本次选定 Environment 的 ACR_USERNAME／ACR_PASSWORD Secrets 和 registry Variables |
 | Actions 能推送，服务器拉取 denied | 用 DEPLOY_USER 在服务器重新 `docker login`；不同 Linux 用户不共用登录状态 |
 | DNS、连接超时 | 核对实际公网 registry 域名和服务器网络；仅 VPC 可达的地址不能直接给 GitHub runner 使用 |
 | `manifest unknown`／不支持媒体类型 | 维护者查看 push 日志及镜像 digest；保持单平台 amd64、关闭 provenance/SBOM，不手改 release.env |
@@ -97,7 +97,7 @@ ss -H -ltn 'sport = :28157'
 
 | 报错 | 维护者检查 |
 | --- | --- |
-| `Permission denied (publickey)` | DEPLOY_USER、DEPLOY_SSH_KEY，以及公钥是否装在该用户 authorized_keys |
+| `Permission denied (publickey)` | 本次选定 Environment 的 DEPLOY_USER、DEPLOY_SSH_KEY，以及公钥是否装在该用户 authorized_keys |
 | `Host key verification failed` | 核对服务器指纹及 DEPLOY_KNOWN_HOSTS；非 22 端口用 `[host]:port`，不关闭主机校验 |
 | `Connection timed out`／`refused` | DEPLOY_HOST、DEPLOY_PORT、SSH 服务、安全组和防火墙 |
 | rsync `command not found` | runner 与服务器均需要 rsync，服务器管理员补齐 |
@@ -114,13 +114,16 @@ ss -H -ltn 'sport = :28157'
 | 位置／现象 | 下一步 |
 | --- | --- |
 | 看不到 workflow 或 Run workflow | 确认部署代码已在 main，仓库允许 Actions；手册要求在 main 手动运行 |
-| images／deploy 被跳过 | 检查 Repository variable `DEPLOY_ENABLED=true`；PR 不发布，手动分支应选 main |
-| 等待 production 审批 | 如果 Environment 配了审批人，请对应审批人处理 |
-| test 红了 | 打开第一个失败步骤，交给维护者修代码；不跳过检查强行部署 |
+| deploy 被跳过 | PR 不发布，手动分支应选 main；推送 main 的目标固定为 test |
+| 日志显示 Environment not enabled／Deployment disabled | 在选定的 test 或 prod Environment 设置 `DEPLOY_ENABLED=true`，不在 Repository 设置 |
+| 提示 Set DEPLOY_ENVIRONMENT | 在所选 Environment 填 `DEPLOY_ENVIRONMENT=test` 或 `prod`，与选择一致 |
+| Missing Environment parameter | 按日志的参数名补齐该 Environment 的配置；检查旧 Repository 同名项已移除 |
+| 等待 test／prod 审批 | 如果 Environment 配了审批人，请对应审批人处理 |
+| checks 红了 | 打开第一个失败步骤，交给维护者修代码；不跳过检查强行部署 |
 | images 构建或冒烟红了 | 维护者查看构建／容器日志；认证与拉取问题查 [E04](#e04) |
 | deploy 的 SSH／rsync 红了 | 查 [E05](#e05) |
 | deploy 的数据库／Nginx／健康／HTTPS 检查红了 | 按日志关键词查 [E07](#e07)、[E08](#e08)、[E10](#e10)、[E09](#e09) |
-| 三个 job 绿了，但没有 prepared | 确认该次勾选 prepare_only，并核对 DEPLOY_ROOT=/srv/c156 |
+| 三个 job 绿了，但没有 prepared | 确认该次勾选 prepare_only、target_environment 选对服务器，并核对该 Environment 的 DEPLOY_ROOT=/srv/c156 |
 | 正式发布时提示数据库缺失 | 第 4 步尚未完成；新库先显式初始化，已有库不要重建 |
 
 **准备阶段的成功标志：** 日志有 `Release prepared`，服务器有 `/srv/c156/prepared/compose.yaml`。
@@ -256,7 +259,7 @@ curl -fsS https://YOUR_DOMAIN/api/healthz
 | `stale deployment rejected` | 旧任务晚到被拒绝；从 Run workflow 发起新一次运行，不改 sequence 文件 |
 | `Already deployed` | 该发布已成功应用，检查 HTTPS SHA 即可 |
 
-已成功发布后，要重新发布请用 **Run workflow** 开新运行；不要依赖旧运行的 Re-run 覆盖成功版本。要回到旧版本，用 [E13](#e13) 的 rollback。
+已成功发布后，要重新发布请用 **Run workflow** 开新运行并选正确的 test／prod；不要依赖旧运行的 Re-run 覆盖成功版本。要回到旧版本，用 [E13](#e13) 的 rollback。
 
 <a id="e13"></a>
 

@@ -48,3 +48,18 @@
 - ARM、多节点、零停机和自动数据库迁移不属于本次交付。
 
 实际入口和初次交接见 [部署手册](../../deploy/README.md)，报错处理见 [排错清单](../../deploy/TROUBLESHOOTING.md)。
+
+## 后续调整：test/prod 独立环境
+
+用户确认：自己的 Ubuntu ECS 为 test，朋友服务器为 prod；推送 main 自动发布 test，prod 手动 Run workflow 选择。工作流增加 target_environment 和独立部署并发组，ACR/SSH 参数全部由对应 GitHub Environment 提供，DEPLOY_ENVIRONMENT 校验目标一致性。旧 Repository 同名项需要迁移并移除，避免上层配置继承。
+
+检查与构建任务不绑定部署 Environment。实际 smoke 通过的镜像保存为带 SHA/attempt 的 artifact，部署任务按生产者输出的 artifact ID 下载、校验、加载，再推送本环境 ACR。独立审阅指出仅重跑部署 job 时 run_attempt 会变化，按当前 attempt 拼下载名会失败；使用生产者 artifact ID 修复该问题。
+
+本次验证：
+
+- actionlint 1.7.12 搭配 shellcheck 0.11.0 检查工作流通过。
+- 直接执行工作流的配置检查 Bash：test/prod 启用、自动未启用、手动未启用、错误环境标记、缺失旧环境标记、缺失 SSH Key、非法目标，共 8 种场景通过。
+- 在独立临时 rootless 引擎运行实际工作流 save/load 命令：两个已验证最终镜像的 ID 和 revision 均保持一致；故意破坏 tar 后在校验处失败，不继续加载。
+- 51 个文档内部链接／锚点及 18 段 Bash 语法通过，git diff --check 通过。
+
+未重新执行应用全套测试或镜像业务 smoke：本次不修改应用、Dockerfile、Compose 或服务器部署脚本，相关证据沿用上文。未创建真实 GitHub Environments、填写 Secrets 或执行 ACR/ECS 发布；GitHub 云端 artifact 传输、部分重跑及 Environment 凭据选择仍需首次实际运行确认。临时本地引擎在验证后停止。

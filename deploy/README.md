@@ -2,7 +2,7 @@
 
 第一次部署按下面 **1 → 6** 做。每步看到“正常结果”再继续；报错就点该步的排错链接。以后更新由 GitHub Actions 完成。
 
-本文使用 `/srv/c156` 和 `28156`。朋友服务器已有 Docker、Compose、Nginx 和证书面板，直接复用；无需安装 Python、Node 或 Certbot。
+本文使用 `/srv/c156` 和 `28156`，适用于已有 Docker、Compose、Nginx 和证书面板的服务器。你的 Ubuntu ECS 使用 `test`，朋友服务器使用 `prod`；两台分别执行同一套步骤，无需安装 Python、Node 或 Certbot。
 
 ## 开始前：维护者把东西准备好
 
@@ -11,6 +11,7 @@
 | 交给朋友 | 填什么 |
 | --- | --- |
 | 部署文件 | `c156-deploy.zip`，解压后包含 `deploy/setup.sh` 等文件 |
+| 部署环境 | 你的服务器填 `test`，朋友服务器填 `prod`；后面两次 Run workflow 都选这个环境 |
 | 网站域名 | 一个确定的域名，例如 `docs.example.cn` |
 | ACR 公网域名 | 从控制台复制，不带 `https://` 或仓库路径 |
 | ACR 用户名和登录密码 | 用于服务器首次 `docker login`；通过私下渠道交付 |
@@ -88,8 +89,8 @@ docker login YOUR_ACR_REGISTRY
 **维护者在 GitHub 操作：**
 
 1. 仓库 → **Actions** → **Test, build and deploy** → **Run workflow**。
-2. 分支选 **main**，勾选 **prepare_only**，点 **Run workflow**。
-3. 等 `test`、`images`、`deploy` 都变绿，再通知朋友继续。
+2. 分支选 **main**；`target_environment` 选本台服务器的 **test** 或 **prod**；勾选 **prepare_only**，点 **Run workflow**。
+3. 等 `checks`、`images`、`deploy` 都变绿，再通知朋友继续。
 
 **朋友确认：**
 
@@ -144,7 +145,7 @@ location / {
 
 ## 6. 维护者正式发布，朋友确认网站
 
-**维护者在 GitHub：** 再次 **Run workflow**，选 **main**，这次**不勾选 prepare_only**。等三个 job 都变绿。
+**维护者在 GitHub：** 再次 **Run workflow**，选 **main**，`target_environment` 与准备时一致，这次**不勾选 prepare_only**。等三个 job 都变绿。
 
 **朋友在服务器：** 将 `YOUR_DOMAIN` 换成第二步填写的域名。
 
@@ -159,7 +160,7 @@ curl -fsS https://YOUR_DOMAIN/api/healthz
 
 **失败定位：** [E06 Actions 失败](TROUBLESHOOTING.md#e06)；[E10 502 或容器不健康](TROUBLESHOOTING.md#e10)；[E11 登录或 API 403](TROUBLESHOOTING.md#e11)；[E12 版本检查失败](TROUBLESHOOTING.md#e12)。
 
-首次安装到这里结束。以后推送 main 会自动更新，朋友无需拉代码或手动构建。更新可能有短暂中断。
+首次安装到这里结束。以后推送 main 自动更新 **test**；更新 **prod** 时，维护者手动 Run workflow，选择 **prod**。朋友无需拉代码或手动构建。更新可能有短暂中断。
 
 ## 日常只记住这三件事
 
