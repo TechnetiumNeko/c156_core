@@ -1,6 +1,6 @@
 # Docker Compose、Nginx 与阿里云自动部署
 
-日期：2026-10-07。状态：用户已批准，进入实施计划，尚未实施。后续补充：使用较高宿主机端口，面向朋友的 CentOS 7 服务器提供最少步骤的部署说明与排错清单；具体组件版本待只读检查确认。
+日期：2026-10-07。状态：用户已授权开始实施。按已提供组件版本复用服务器环境，TLS 交给面板；自动续签作为首次上线检查，不声称已经验证。
 
 ## 1. 目标与用户确认
 
@@ -11,14 +11,15 @@ Vue 与 FastAPI 已完成最小前后端闭环。本阶段为它们提供 Docker
 - 目标服务器是阿里云 ECS，需要配置公网与 HTTPS 入口。
 - 镜像推送到用户已有的 ACR 个人版，实际地址以实例控制台为准。
 - 保留服务器现有 Nginx，部署时更新本项目站点 conf。
-- 使用经典 Certbot 自动申请与续签证书，不使用 Caddy。
+- 不使用 Caddy；原 Certbot 路线经后续讨论简化为复用服务器面板的证书管理，本阶段不安装 Certbot 或新的续签任务。
 - SQLite 与资产文件必须落在服务器可直接访问的目录，方便下载及备份。
 - 阿里云镜像地址、网络配置、GitHub Variables/Secrets 和服务器配置要有操作文档。
 - 宿主机应用端口默认 127.0.0.1:28156，可配置；公网 Nginx 仍使用 80/443，容器内部端口不要求对应高位端口。
 - 面向朋友服务器交付，尽量减少手工配置。GitHub/ACR 凭据配置由项目维护者完成，朋友只处理首次服务器准备、域名/证书及数据引导。
-- 用户已确认朋友服务器为 CentOS 7，覆盖此前暂按 Ubuntu/Debian 的假设。不能将 Ubuntu apt/snap 安装说明作为目标服务器步骤。
+- 用户先前转述系统为 CentOS 7，随后提供实际版本输出：内核 6.6.47-12.oc9.x86_64，Docker 28.0.1-20241223130549-3b49deb，Compose 2.32.1，Nginx 1.26.3；主机没有 certbot 命令。按实际组件设计，不要求先升级现有服务或安装 Ubuntu apt/snap 工具。
+- 用户说明服务器面板可以图形化配置证书，并同意继续实施。面板名称及续签能力尚未验证；按通用面板交接编写文档，首次上线须检查续签和 HTTPS，不能以“大概率支持”代替验收。
 
-实际域名、ECS 地址、区域、ACR 地址、部署账号与安装路径通过配置提供；设计与仓库不保存用户凭据。目标是 CentOS 7/systemd 和已有主机 Nginx。Docker/Compose、内核、Certbot 现有版本需先检查；不能假设最新 Docker 安装包支持该系统，也不能仅凭容器构建通过宣称目标宿主机兼容。自定义 Nginx 安装路径作为安装参数，不替换它的全局配置。
+实际域名、服务器地址、区域、ACR 地址、部署账号与安装路径通过配置提供；设计与仓库不保存用户凭据。使用已提供的 Docker/Compose 和主机 Nginx；oc9 标识符合 OpenCloudOS 9，准确发行版名称以 /etc/os-release 为准，但当前不需要为应用部署变更系统。服务器面板可能使用自定义 Nginx 安装路径和 reload 入口，这些作为安装参数，不替换它的全局配置。组件版本是制定方案的依据，不能把本地容器通过称为朋友服务器已完成验收。
 
 ## 2. 运行拓扑与选择
 
@@ -26,7 +27,7 @@ Vue 与 FastAPI 已完成最小前后端闭环。本阶段为它们提供 Docker
 
 ```text
 浏览器 HTTPS
-  → ECS 现有 Nginx：TLS、ACME 验证目录、项目站点配置
+  → 服务器面板管理的现有 Nginx：TLS、项目站点入口
     → 127.0.0.1:28156：frontend 容器（Nginx + Vue 构建产物）
       ├─ 静态文件
       └─ /api/* → backend:8001（FastAPI）
@@ -38,7 +39,7 @@ frontend 的 Nginx 是镜像内的简单静态服务和 API 代理。主机 Ngin
 
 相较将 Vue 产物解包到主机，本方案增加一个轻量运行容器，但前后端镜像可以按同一提交版本发布和回退。相较将公网 Nginx 整体迁入 Compose，本方案保留现有服务器管理边界。
 
-Compose 只发布 frontend 到主机 loopback，默认 127.0.0.1:28156；backend 不发布宿主机端口。高位端口仍需在首次准备时检测是否占用；改变端口时同步更新 Compose、主机 conf 与健康检查，不能自动跳到一个未记录的端口。应用入口配置、镜像引用、数据目录和项目网络由同一个 Compose 文件管理。Certbot、主机 Nginx 和证书定时任务属于主机设施，不在每次应用升级中重建。
+Compose 只发布 frontend 到主机 loopback，默认 127.0.0.1:28156；backend 不发布宿主机端口。高位端口仍需在首次准备时检测是否占用；改变端口时同步更新 Compose、项目反代片段与健康检查，不能自动跳到一个未记录的端口。应用入口配置、镜像引用、数据目录和项目网络由同一个 Compose 文件管理。公网 Nginx、证书和续签属于面板管理边界，不在应用升级中重建。
 
 本阶段使用单 backend 实例、单 Uvicorn worker；升级允许短暂停顿，不承诺零停机。不引入 Kubernetes、Redis、云数据库或资产上传功能。
 
@@ -67,10 +68,10 @@ Compose 只发布 frontend 到主机 loopback，默认 127.0.0.1:28156；backend
     c156.sqlite
   assets/                   资产持久化目录
   backups/                  可下载的一致数据库备份
-  acme/                     HTTP-01 验证目录
+  nginx/proxy.inc           项目反向代理指令片段
 ```
 
-证书保留 Certbot 标准的 /etc/letsencrypt 目录，由主机 Certbot 管理，Nginx 引用其 live 路径。部署不复制私钥到镜像或 GitHub。
+证书保留面板管理的目录和站点引用路径。部署不复制私钥到镜像或 GitHub，不假设证书位于 /etc/letsencrypt。
 
 数据使用 bind mount，不放在容器 writable layer 或仅可从 Docker 内部定位的匿名卷。挂载整个数据库目录，包含 SQLite 必需的 WAL/SHM。资产挂载不代表提供上传接口或公开下载所有文件；本阶段不将该目录直接暴露为公开 Nginx 静态目录。
 
@@ -95,9 +96,9 @@ Compose 只发布 frontend 到主机 loopback，默认 127.0.0.1:28156；backend
 
 ## 6. Nginx 配置更新
 
-仓库保存主机站点模板和容器内配置，各自责任独立。主机只安装一个指定项目站点 conf；不覆盖 nginx.conf 或其他站点文件。
+仓库保存主机项目反代片段模板和容器内配置，各自责任独立。公网站点 server/TLS/ACME 块由面板管理；CI 仅安装项目目录中的独立 proxy.inc，不覆盖整份站点 conf、nginx.conf 或其他站点文件。
 
-发布包携带与镜像相同提交版本的配置。服务器渲染域名、loopback 端口、ACME 根和证书路径，输入按格式严格校验，避免将任意文本注入 Nginx 或 shell。
+发布包携带与镜像相同提交版本的配置。服务器渲染 loopback 端口及代理参数，输入按格式严格校验，避免将任意文本注入 Nginx 或 shell。proxy.inc 只含 location 内的代理指令，不包含 server/location/SSL 块；朋友在面板创建全站反代后一次性将其包含到该反代 location。面板若不支持 include，可直接使用面板全站反代配置，配置 NGINX_MANAGED=0，日常部署不改 Nginx；默认示例说明 include 接法及检查方法。
 
 使用 CI 传送的确定提交发布包，不在 ECS 运行 git pull 或 reset --hard 去追随最新 main；配置、镜像、脚本必须属于同一提交。同步范围只包含该版本发布文件，不能在整个部署根执行 rsync --delete。模板文件不能直接作为线上 conf 的软链接；安装的是经过渲染并校验的独立文件，避免同步模板时覆盖真实域名。
 
@@ -107,20 +108,13 @@ Compose 只发布 frontend 到主机 loopback，默认 127.0.0.1:28156；backend
 
 不声称多个容器切换与 Nginx reload 具有跨进程事务原子性。部署状态记录前后端 digest、站点配置版本和完成状态；回退操作可定位上一份成功发布。首次部署没有上一版本时明确失败并保留数据及诊断，不伪造回滚成功。
 
-## 7. Certbot 首次申请与自动续签
+## 7. 面板证书与首次上线
 
-采用 certbot certonly --webroot，证书工具不自动重写受仓库管理的 Nginx conf。
+朋友在现有面板中创建网站、绑定域名、申请/配置证书并开启 HTTPS 和自动续签，创建全站反代至 http://127.0.0.1:28156。项目部署保留面板的 TLS、ACME 和证书文件，不运行 Certbot，不增加并行续签服务。
 
-首次安装由专用初始化步骤执行：
+提供简短首次上线检查：域名解析正确、HTTPS 证书有效、面板自动续签已启用、/ 与 /assets/ 和 /api/ 均到达项目容器。手工上传证书不等同自动续签；续签失败按面板日志处理。项目文件锁只协调项目部署和 rollback，不能声称控制未知面板的内部调度。
 
-1. 校验域名 DNS 已指向目标 ECS，80/443 可达，服务器可访问证书机构的 ACME 服务。
-2. 先安装仅 HTTP 的验证配置，服务 /.well-known/acme-challenge/；尚无证书时不引用不存在的 TLS 文件，也不开放 HTTP 登录。
-3. 运行 Certbot webroot 申请该域名证书，使用明确证书名称和运维联系邮箱。
-4. 安装 HTTPS 项目站点配置，nginx -t 后 reload，HTTP 保留验证目录并将普通页面重定向 HTTPS。
-5. 配置主机 Certbot 自动续签任务；存在打包自带的 timer/cron 时复用并检查，不再增加重复调度。只有缺少调度时才安装项目提供的 systemd 定时任务。
-6. 使用 deploy hook，仅证书实际成功更新后校验并 reload Nginx。hook 与应用配置更新使用同一服务器锁，避免并发 reload/配置切换。
-
-后续每次推送只更新站点配置和应用版本，复用已有证书；不重复注册/强制申请。证书续签独立于 GitHub 推送频率。文档提供 certbot renew --dry-run、到期检查和失败日志定位方法。
+如果面板证书管理不能满足需求，再由用户明确选择 Certbot 补充方案；当前交付不为这一假设增加组件和维护步骤。
 
 ## 8. GitHub Actions 流水线
 
@@ -130,7 +124,7 @@ Compose 只发布 frontend 到主机 loopback，默认 127.0.0.1:28156；backend
 - 发布：仅 main 的成功检查结果允许构建前后端镜像，通过容器 smoke 后推送到现有 ACR。测试的镜像与推送的镜像必须相同；若重新构建必须重新 smoke。固定提交 SHA，生成 digest 与该提交的发布包；可缓存构建层，不能把缓存成功当作测试证据。
 - 部署：使用 GitHub production Environment 和 SSH 验证过的主机密钥，将发布包传到指定目录，服务器拉取两个确切 digest，应用健康后更新项目 Nginx conf，HTTPS 验证通过才记录发布成功。
 
-生产部署串行执行，不能取消已经进入主机配置切换的任务。CI 新版本可取消旧的检查；部署需拒绝已过期的发布任务，防止旧构建后完成覆盖新版本。服务器也使用文件锁，协调部署、配置 reload 与续签 hook。
+生产部署串行执行，不能取消已经进入主机配置切换的任务。CI 新版本可取消旧的检查；部署需拒绝已过期的发布任务，防止旧构建后完成覆盖新版本。服务器使用文件锁协调项目部署和回退；面板外部操作在运维时避免并发进行。
 
 使用 OpenSSH/rsync 传送发布包并运行脚本，严格校验预配置的 known_hosts。各 job 设置合理超时，workflow 默认 contents:read；ACR 登录使用专用凭据，不复制参考项目为 GHCR 双推设置的额外 GitHub packages 权限。第三方 Actions 固定完整 commit SHA，版本在实施时核对官方发行记录。
 
@@ -146,7 +140,7 @@ Compose 只发布 frontend 到主机 loopback，默认 127.0.0.1:28156；backend
 | 镜像推送认证 | ACR_USERNAME、ACR_PASSWORD | GitHub Secrets，注册表用户名/密码，不是阿里云主账户登录密码 |
 | 部署目标 | DEPLOY_HOST、DEPLOY_PORT、DEPLOY_USER、DEPLOY_ROOT | production Environment Variables |
 | SSH | DEPLOY_SSH_KEY、DEPLOY_KNOWN_HOSTS | production Environment Secrets，可信主机密钥从独立渠道确认 |
-| 网站配置 | SITE_DOMAIN、ACME_EMAIL、项目 conf 路径、loopback 端口、网络 CIDR | 主机配置；非秘密值可从 Environment Variables 发布 |
+| 网站配置 | SITE_DOMAIN、项目 include 路径、loopback 端口、网络 CIDR | 一份主机配置，非秘密值；证书只在面板配置 |
 | 拉取镜像 | 服务器 Docker 登录凭据 | 首次主机配置，优先只读凭据，不写入镜像或站点 conf |
 
 HTTP webroot 验证无需 AliDNS API 凭据。本阶段无需额外阿里云 AccessKey；不为了已有镜像仓库登录额外申请高权限云 API 密钥。
@@ -168,8 +162,8 @@ HTTP webroot 验证无需 AliDNS API 凭据。本阶段无需额外阿里云 Acc
 - 提供 deploy/TROUBLESHOOTING.md：按实际报错/症状索引，给出要执行的诊断命令、预期现象和下一步，不要求先理解项目架构。
 - 一份服务器配置文件，必填项集中；宿主机端口、目录、内部网络及应用 UID/GID有合理默认值，首次准备明确检测或生成，不让使用者在多处重复填写。
 - 一条共用部署入口供 CI 与人工更新；首次准备是独立入口，不让日常部署执行初始化、软件安装或改写其他站点。
-- 主机缺少 Docker/Compose、Nginx 或 Certbot 时，给出明确组件检查及对应安装步骤；不以通用一键脚本盲目覆盖已有 Nginx 安装和配置。
-- CentOS 7 文档先列 uname -r、Docker/Compose、Nginx、Certbot 版本检查。保留已有可用组件，不自动升级系统/内核、替换全局 yum 源、关闭 SELinux/firewalld 或停止其他站点；缺少组件时根据检查结果给出经过核对的安装路径。若 Certbot 主机安装不适用，容器化 Certbot 是需要明确选择的备选，不能静默变更已确认边界。
+- 复用已提供的 Docker 28、Compose 2.32.1、Nginx 1.26.3；不要求安装 Certbot，不以一键脚本覆盖现有 Nginx 安装和配置。
+- 使用已提供版本的服务器准备说明，先复用现有 Docker/Compose/Nginx。保留已有可用组件，不自动升级系统/内核、替换全局软件源、关闭 SELinux/firewalld 或停止其他站点。面板若管理 TLS，部署不能覆盖面板维护的证书和站点块；可采用首次添加项目反代 include 的方式，由 CI 只更新该独立片段。具体接法待面板能力确认，不让朋友重复维护 Certbot 与面板两套证书。
 - 发布时一并留存确切提交源码与版本记录；朋友不必在服务器安装 Node/Python 开发工具链或掌握镜像构建流程。
 
 ## 10. 验证范围
@@ -200,6 +194,7 @@ HTTP webroot 验证无需 AliDNS API 凭据。本阶段无需额外阿里云 Acc
 - CentOS 7 生命周期：https://www.centos.org/centos-linux/
 - Docker 当前 CentOS 支持范围：https://docs.docker.com/engine/install/centos/
 - Certbot 安装方式：https://eff-certbot.readthedocs.io/en/stable/install.html
+- OpenCloudOS 9.2 与 6.6 内核：https://docs.opencloudos.org/release/v9.2/
 
 ## 12. 参考已有项目（2026-10-07 只读检查）
 
