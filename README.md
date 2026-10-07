@@ -1,6 +1,6 @@
 # C156 Core
 
-用于共同创作和阅读内容的网站原型。当前实现统一 SQLite 内容内核，CLI 和 HTML／JS 工作台通过同一个 `ContentService` 读写虚拟目录和文档。工作台用于试手和演示架构，采用原生前端与 Python HTTP 标准库；密码散列需要安装 requirements.txt 中固定版本的运行依赖，无需前端构建。
+用于共同创作和阅读内容的网站原型。当前实现统一 SQLite 内容内核，CLI、新 Vue 工作台和旧 HTML／JS 工作台通过同一个 `ContentService` 读写虚拟目录和文档。新工作台采用 Vue + FastAPI，提供登录、目录浏览、正文读取、手动保存和冲突处理；旧原生前端与 Python 标准库 HTTP 入口继续保留。
 
 ## 架构边界
 
@@ -18,7 +18,36 @@
 
 账号系统将身份、凭据、会话、成员关系和权限判断作为独立边界：Web 负责 Cookie、CSRF 和登录页面，服务层负责认证与授权，内容服务接收明确的 session_token，在同一事务内解析身份与授权。实时协作将更新模型、版本向量和合并规则与房间、同步、Presence、WebSocket 传输分开；稳定正文检查点仍由内容和版本服务保存。身份认证、账号管理、成员关系与授权已实现；实时协作和作品发布仍未交付。
 
-## 快速试用
+## Vue + FastAPI 本地开发
+
+使用 Python 3.13 和 Node 22，在仓库根目录安装隔离依赖：
+
+```bash
+python -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt -r requirements-dev.txt
+npm --prefix frontend ci
+```
+
+首次使用先显式准备独立库。下面路径仅供本机试用，不写默认库或原始样本；密码由终端隐藏输入并确认：
+
+```bash
+.venv/bin/python -m src.storage init --database /tmp/c156-vue-local.sqlite
+.venv/bin/python -m src.identity bootstrap-admin --database /tmp/c156-vue-local.sqlite --login-name owner --display-name 管理员
+```
+
+两个终端分别启动（需要已有协议 2 WAL 库；普通启动不初始化、播种、升级或修复）：
+
+```bash
+.venv/bin/python run_server.py --database /tmp/c156-vue-local.sqlite --port 8001
+# 另一终端
+npm --prefix frontend run dev
+```
+
+打开 <http://127.0.0.1:5173/>；Vite 将 `/api` 代理至 loopback 后端 8001，保留 Host/Origin。后端为单 worker，无 CORS，不信任转发来源头。端口占用时先停止自己启动的进程或显式配置其他端口，配置方法见 [工作台开发](docs/工作台开发.md)。结束时分别 Ctrl+C。
+
+新页面尚无新建、Markdown 预览和账号／访问管理；这些操作可使用下方旧工作台或 CLI，再在新页面重新登录加载。草稿仅存内存，保存失败或冲突会保留正文与基础修订。默认库仍为 `data/c156.sqlite`，只有明确的管理命令会创建或导入它。
+
+## 旧工作台快速试用
 
 在仓库根目录运行（已验证 Python 3.13.2）：
 
@@ -85,4 +114,4 @@ python -m unittest discover -s tests -v
 node --experimental-default-type=module --test tests/web/*.test.mjs
 ```
 
-前端验证使用 Node 22，实际 HTML 净化检查需额外的 jsdom；配置方法见 [工作台开发](docs/工作台开发.md#运行与验证)。工作台运行本身无需 Node。浏览器验证默认只打开并截图。
+前端验证使用 Node 22，实际 HTML 净化检查需额外的 jsdom；配置方法见 [工作台开发](docs/工作台开发.md#运行与验证)。旧工作台运行本身无需 Node；新工作台开发需要 Vite。新工程检查为 `npm --prefix frontend run test`、`npm --prefix frontend run typecheck`、`npm --prefix frontend run build`。浏览器验证默认只打开并截图。
