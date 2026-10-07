@@ -17,6 +17,10 @@ def document_json(document):
             'revision_id': document.revision_id}
 
 
+def document_access_json(view):
+    return {'document': document_json(view.document), 'access': content_access_json(view.access)}
+
+
 def user_json(user):
     return {key: getattr(user, key) for key in ('id', 'login_name', 'display_name', 'status', 'site_admin', 'version')}
 
@@ -28,4 +32,3 @@ def session_json(session):
 def content_access_json(access):
     return {'version': access.version, 'actions': list(access.actions), 'visibility': access.visibility,
             'frozen': access.frozen, 'can_freeze': access.can_freeze, 'can_unfreeze': access.can_unfreeze}
-

@@ -1,8 +1,8 @@
-"""Authentication routes directly adapt existing application services."""
+"""Synchronous routes directly adapt existing application services."""
 from fastapi import APIRouter, Depends, Request, Response
 from .auth import parse_identity, require_login_nonce, require_session_csrf, set_session_cookie
-from .schemas import LoginBody, EmptyBody, validate_body
-from .serialization import session_json, node_json, content_access_json
+from .schemas import LoginBody, EmptyBody, SaveDocumentBody, validate_body
+from .serialization import session_json, node_json, content_access_json, document_access_json
 from .transport import read_json_object, read_query
 
 router = APIRouter()
@@ -14,6 +14,37 @@ async def login_body(request: Request):
 async def empty_body(request: Request):
     read_query(request)
     return validate_body(EmptyBody, await read_json_object(request))
+
+async def save_document_body(request: Request):
+    read_query(request)
+    return validate_body(SaveDocumentBody, await read_json_object(request))
+
+@router.get('/api/children')
+def children(request: Request):
+    query = read_query(request, required=('folder_id',))
+    identity = parse_identity(request)
+    services = request.app.state.services
+    views = services.content.list_children_with_access(
+        services.scope, query['folder_id'], session_token=identity.session_token)
+    return {'nodes': [{**node_json(view.node), 'access': content_access_json(view.access)}
+                      for view in views]}
+
+@router.get('/api/document')
+def read_document(request: Request):
+    query = read_query(request, required=('object_id',))
+    identity = parse_identity(request)
+    services = request.app.state.services
+    return document_access_json(services.content.read_document_with_access(
+        services.scope, query['object_id'], session_token=identity.session_token))
+
+@router.put('/api/document')
+def save_document(request: Request, body: SaveDocumentBody = Depends(save_document_body)):
+    identity = parse_identity(request)
+    services = request.app.state.services
+    require_session_csrf(request, services, identity)
+    return document_access_json(services.content.save_document_with_access(
+        services.scope, body.object_id, body.content,
+        expected_revision_id=body.expected_revision_id, session_token=identity.session_token))
 
 @router.get('/api/bootstrap')
 def bootstrap(request: Request):
