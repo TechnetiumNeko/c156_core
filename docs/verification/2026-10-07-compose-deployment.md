@@ -1,0 +1,50 @@
+# Compose 部署交付验证
+
+实施分支：`feat/compose-deploy`。生产配置与容器代码已完成；独立整分支审阅后的修复提交为 `856d0df`。不连接朋友服务器，不推送 ACR 或触发真实部署。
+
+## 实际运行的检查
+
+| 命令／检查 | 结果 |
+| --- | --- |
+| Python 3.13：`python -m unittest discover -s tests -q` | 485 项通过；之后新增的发布指针回归用例与相关检查一起验证 |
+| `C156_JSDOM_PATH=/tmp/c156-web-checks/node_modules/jsdom node --test tests/web/*.test.mjs` | 16 项通过，真实 jsdom，未跳过 |
+| frontend：`npm ci`、`npm test`、`npm run typecheck`、`npm run build` | 22 项测试、类型检查与构建通过 |
+| `python -m unittest tests.test_deployment tests.test_backup tests.test_server_production -q` | 最后修复后的 9 项相关检查通过 |
+| `docker compose -f deploy/compose.yaml config --quiet`，带必需配置 | 通过；只有前端绑定 loopback 高位端口 |
+| 两个 Dockerfile 实际 `docker build` | 后端、前端最终镜像成功构建；基础镜像使用官方 digest |
+| `BUILD_SHA=… BACKEND_IMAGE=… FRONTEND_IMAGE=… python deploy/smoke.py` | 实际 frontend→FastAPI：版本、健康、Secure Cookie、登录、保存、重建后读取、退出通过 |
+| `bash -n deploy/*.sh` | 通过 |
+| actionlint 1.7.12 + shellcheck 0.11.0 | 工作流及部署 Bash 检查通过 |
+| `bash deploy/package.sh OUTPUT SHA BACKEND_DIGEST FRONTEND_DIGEST SEQUENCE` | 最终提交源码归档与交付脚本逐字一致，release.env SHA 正确 |
+
+本机系统 Docker socket 对当前账号不可用，但已安装 rootless 工具和用户 UID/GID 映射。使用独立临时 rootless Docker 29.0.2 引擎完成上述检查，未修改系统 Docker 权限。测试使用一次性可写目录适配 rootless UID 映射；生产 setup 仍为指定 APP_UID/GID 和 0700 目录。
+
+## 真实失败恢复检查
+
+使用一次性脚本调用原始 `deploy/deploy.sh`，搭配真实临时 Distribution Registry、两组不同 build SHA 的最终镜像、独立 Nginx 1.18 和临时 TLS 证书。通过 curl 的仅测试配置将 HTTPS 443 请求连接到隔离高位端口，并验证证书；没有替换 curl、Docker 或 Nginx 为 mock。
+
+实际观测结果：
+
+- 首次候选 Nginx 配置非法：明确报告没有上一版本，未创建 current/previous。
+- 首次成功：前后端 SHA 与真实 HTTPS 检查通过，未生成虚假的 previous。
+- 后续候选 `nginx -t` 失败：原代理片段、旧镜像、current/previous 和发布序号恢复。
+- 成功记录暂存文件指向 `/dev/full`：真实写入失败后旧服务恢复，成功记录不变。
+- current 新链接位置存在文件：真实链接发布失败后，已改变的 previous 被恢复，旧服务正常。
+- 真正无法启动的候选后端：Compose 健康检查失败，旧容器恢复，成功记录不变。
+- 所有失败后，实际 ContentService 仍读到原用户正文，部署前已生成经过校验的 SQLite 快照。
+- 经过外层 Nginx、前端代理和 Uvicorn，伪造 X-Forwarded-For 被覆盖；实际认证限流来源是 127.0.0.1，未采用伪造来源。
+
+最后停止并移除了本次测试容器、网络、临时 Registry 和 Nginx。临时引擎也在收尾时停止。
+
+## 审阅及修复
+
+独立 reviewer 使用全新上下文审阅整分支。无 Critical；发现发布重跑覆盖元数据、首次虚假上一版本、状态提交失败不恢复指针三个重要问题，以及失败恢复证据缺口。修复采用唯一 run attempt 发布目录、有效 release 链接解析、提交前状态暂存及失败链接还原；上述真实检查验证了结果。未另加永久大型部署测试框架。
+
+## 尚未验证
+
+- 真实 GitHub Actions 云端执行、ACR 个人版推送及 ECS SSH 部署：尚未提供实际 variables/secrets，未尝试。
+- 朋友面板的具体配置界面、Nginx 1.26 主机权限、真实公网域名/DNS/证书申请及自动续签。
+- 真实浏览器 HTTPS 登录和保存；未进行浏览器自动交互。上线手册包含首次人工确认步骤。
+- ARM、多节点、零停机和自动数据库迁移不属于本次交付。
+
+实际入口和初次交接见 [部署手册](../../deploy/README.md)，报错处理见 [排错清单](../../deploy/TROUBLESHOOTING.md)。

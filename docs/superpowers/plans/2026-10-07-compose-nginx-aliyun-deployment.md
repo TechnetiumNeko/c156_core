@@ -127,3 +127,12 @@
 ## 自检与执行方式
 
 六项按顺序，接口由前项定义；Task1/2/4共享Origin和网络，Task2/3/4共享挂载和UID，Task4/5共享release契约，Task6使用实际命令。面板名称未确认不阻塞应用容器；通用全站反代/include说明和 NGINX_MANAGED=0保留少操作接法。用户最新指令已明确开始工作，按计划inline执行，最终由独立agent审阅。新架构变化仍向用户说明，执行不连接真实服务器。
+
+
+## 交付记录
+
+六项已实施，真实验证及范围见 [验证记录](../../verification/2026-10-07-compose-deployment.md)。Docker 权限问题已通过已安装的临时 rootless 引擎解决，未改变系统 Docker。实际容器链路、备份、临时 Nginx/TLS、失败恢复均已验证。
+
+计划调整：当前只交付与朋友 x86_64 相符的 amd64 构建；Buildx 远程缓存暂未加入，以保留直接 build/load/test/push 的简短流程。部署目录加入 run_attempt，成功发布不被工作流重跑覆盖。首次工作流勾选 prepare_only，仅准备镜像和文件，显式初始化及面板准备之后再正式发布。
+
+清单保留原始步骤作为审阅基线；云端 Actions、ACR/ECS、真实面板证书续签和浏览器验收未执行，不能由本地检查代替。分支保留供审阅，未自动 merge/push。
