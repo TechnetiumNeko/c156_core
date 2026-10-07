@@ -15,7 +15,7 @@ load_config() {
   done < "$requested/config.env"
   [[ $DEPLOY_ROOT == "$requested" ]] || fail 'DEPLOY_ROOT differs from requested root'
   [[ $SITE_DOMAIN =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ && $SITE_DOMAIN == *.* && $SITE_DOMAIN != *..* ]] || fail 'invalid SITE_DOMAIN'
-  [[ $APP_PORT =~ ^[1-9][0-9]{0,4}$ ]] && (( APP_PORT >= 1024 && APP_PORT <= 65535 )) || fail 'invalid APP_PORT'
+  if [[ ! $APP_PORT =~ ^[1-9][0-9]{0,4}$ ]] || (( APP_PORT < 1024 || APP_PORT > 65535 )); then fail 'invalid APP_PORT'; fi
   [[ $APP_UID =~ ^[1-9][0-9]{0,8}$ && $APP_GID =~ ^[1-9][0-9]{0,8}$ ]] || fail 'invalid application UID/GID'
   [[ $NGINX_MANAGED == 0 || $NGINX_MANAGED == 1 ]] || fail 'NGINX_MANAGED must be 0 or 1'
   [[ $PROXY_NETWORK =~ ^[0-9.]+/[0-9]+$ ]] || fail 'invalid IPv4 proxy subnet'
@@ -49,4 +49,15 @@ check_environment() {
   docker info >/dev/null
   docker compose version >/dev/null
   if [[ $NGINX_MANAGED == 1 ]]; then command -v "$NGINX_BIN" >/dev/null || fail 'nginx binary not found; set NGINX_BIN'; fi
+}
+
+release_pointer() {
+  local link=$1 resolved
+  if [[ ! -L $link ]]; then
+    [[ ! -e $link ]] || fail 'release state must be a symlink'
+    return 0
+  fi
+  resolved=$(realpath -e "$link") || fail 'broken release state pointer'
+  [[ -d $resolved && $resolved == "$DEPLOY_ROOT/releases/"* ]] || fail 'release state outside releases directory'
+  printf '%s\n' "$resolved"
 }

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 umask 077
+# shellcheck source=common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 [[ $# == 2 || $# == 3 ]] || fail 'usage: deploy.sh ROOT RELEASE_DIR [--prepare|--rollback]'
 load_config "$1"
@@ -11,8 +12,8 @@ load_release "$release"
 candidate_sha=$BUILD_SHA; candidate_sequence=$DEPLOY_SEQUENCE
 exec 9>"$DEPLOY_ROOT/deploy.lock"
 flock -w 300 9 || fail 'another deployment holds the lock'
-old=$(readlink -f "$DEPLOY_ROOT/current" || true)
-previous=$(readlink -f "$DEPLOY_ROOT/previous" || true)
+old=$(release_pointer "$DEPLOY_ROOT/current")
+previous=$(release_pointer "$DEPLOY_ROOT/previous")
 watermark=0
 if [[ -f $DEPLOY_ROOT/sequence ]]; then
   read -r watermark < "$DEPLOY_ROOT/sequence"
@@ -48,13 +49,21 @@ probe() {
 }
 proxy=$DEPLOY_ROOT/nginx/proxy.inc
 proxy_saved=$DEPLOY_ROOT/nginx/.proxy.before.$$
-proxy_existed=0; switched=0; success=0
+proxy_existed=0; switched=0; success=0; state_started=0
+state_current=$DEPLOY_ROOT/.current.before.$$
+state_previous=$DEPLOY_ROOT/.previous.before.$$
+[[ -z $old ]] || ln -s "$old" "$state_current"
+[[ -z $previous ]] || ln -s "$previous" "$state_previous"
 if [[ -f $proxy ]]; then cp -p "$proxy" "$proxy_saved"; proxy_existed=1; fi
 restore_on_exit() {
   local status=$?
   if (( success == 0 && switched == 1 )); then
     printf 'Deployment failed; restoring prior configuration and containers.\n' >&2
     local recovery_failed=0
+    if (( state_started )); then
+      if [[ -n $old ]]; then mv -Tf "$state_current" "$DEPLOY_ROOT/current" || recovery_failed=1; else rm -f "$DEPLOY_ROOT/current" || recovery_failed=1; fi
+      if [[ -n $previous ]]; then mv -Tf "$state_previous" "$DEPLOY_ROOT/previous" || recovery_failed=1; else rm -f "$DEPLOY_ROOT/previous" || recovery_failed=1; fi
+    fi
     if [[ $NGINX_MANAGED == 1 ]]; then
       if (( proxy_existed )); then mv -f "$proxy_saved" "$proxy"; else rm -f "$proxy"; fi
       "$NGINX_BIN" -t && "$NGINX_BIN" -s reload || recovery_failed=1
@@ -69,7 +78,7 @@ restore_on_exit() {
     fi
     (( recovery_failed == 0 )) || printf 'ERROR: rollback failed; manual repair required. Data was retained.\n' >&2
   fi
-  rm -f "$proxy_saved"
+  rm -f "$proxy_saved" "$state_current" "$state_previous" "$DEPLOY_ROOT/sequence.new.$$"
   exit "$status"
 }
 trap restore_on_exit EXIT
@@ -92,11 +101,15 @@ fi
 probe "https://$SITE_DOMAIN" /build-info.json "{\"build_sha\":\"$candidate_sha\"}" || fail 'public HTTPS frontend/version check failed'
 probe "https://$SITE_DOMAIN" /api/healthz "{\"status\":\"ok\",\"build_sha\":\"$candidate_sha\"}" || fail 'public HTTPS API check failed'
 # Success pointers advance only after all probes pass. Database is never restored automatically.
-if [[ -n $old && $old != "$release" ]]; then atomic_link "$old" "$DEPLOY_ROOT/previous"; fi
-atomic_link "$release" "$DEPLOY_ROOT/current"
 if (( candidate_sequence > watermark )); then
   printf '%s\n' "$candidate_sequence" > "$DEPLOY_ROOT/sequence.new.$$"
-  mv -f "$DEPLOY_ROOT/sequence.new.$$" "$DEPLOY_ROOT/sequence"
+fi
+state_started=1
+if [[ -n $old && $old != "$release" ]]; then atomic_link "$old" "$DEPLOY_ROOT/previous"; fi
+atomic_link "$release" "$DEPLOY_ROOT/current"
+# Sequence is committed last; a preceding failure restores both success links.
+if (( candidate_sequence > watermark )); then
+  mv -Tf "$DEPLOY_ROOT/sequence.new.$$" "$DEPLOY_ROOT/sequence"
 fi
 success=1
 printf 'Deployed %s; backup %s/backups/%s\n' "$candidate_sha" "$DEPLOY_ROOT" "$backup"

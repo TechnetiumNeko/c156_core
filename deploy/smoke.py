@@ -7,7 +7,7 @@ import socket
 import subprocess
 import tempfile
 import time
-from urllib.request import Request, urlopen
+from urllib.request import Request, build_opener, ProxyHandler
 from urllib.error import HTTPError, URLError
 
 
@@ -32,13 +32,14 @@ def main():
         def run(*args, input=None):
             return subprocess.run(command + list(args), env=env, input=input, text=True,
                                   check=True, stdout=subprocess.PIPE).stdout
+        opener = build_opener(ProxyHandler({}))
         def request(path, body=None, method=None, headers=None):
             req = Request(f'http://127.0.0.1:{port}' + path,
                 data=json.dumps(body).encode() if body is not None else None,
                 method=method, headers={'Host': 'smoke.example', 'Origin': 'https://smoke.example',
                 'X-Forwarded-For': '203.0.113.7', 'X-Forwarded-Proto': 'https',
                 'Content-Type': 'application/json', **(headers or {})})
-            with urlopen(req, timeout=5) as response:
+            with opener.open(req, timeout=5) as response:
                 raw = response.read()
                 return raw, response.headers
         password = secrets.token_urlsafe(24)
@@ -75,6 +76,8 @@ print(doc.id)
             document = json.loads(request('/api/document?object_id=' + object_id, headers=auth)[0])['document']
             saved = json.loads(request('/api/document', {'object_id': object_id, 'content': 'after\n中文\n',
                 'expected_revision_id': document['revision_id']}, 'PUT', auth)[0])
+            run('exec', '-T', 'backend', 'python', '-m', 'src.storage', 'backup',
+                '--database', '/data/c156.sqlite', '--output', '/backups/smoke.sqlite')
             run('up', '-d', '--force-recreate', '--wait', '--wait-timeout', '90')
             assert json.loads(request('/api/document?object_id=' + object_id, headers=auth)[0]) == saved
             request('/api/auth/logout', {}, headers=auth)

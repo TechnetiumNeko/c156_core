@@ -98,6 +98,7 @@ jobs:
           KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
           SHA: ${{ github.sha }}
           SEQUENCE: ${{ github.run_number }}
+          ATTEMPT: ${{ github.run_attempt }}
           PREPARE_ONLY: ${{ inputs.prepare_only }}
         run: |
           set -euo pipefail
@@ -109,10 +110,15 @@ jobs:
           printf '%s\n' "$KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
           chmod 600 "$HOME/.ssh/id_c156" "$HOME/.ssh/known_hosts"
           ssh_options=(-i "$HOME/.ssh/id_c156" -p "$DEPLOY_PORT" -o StrictHostKeyChecking=yes -o BatchMode=yes)
-          destination="$DEPLOY_ROOT/releases/$SEQUENCE-$SHA"
-          ssh "${ssh_options[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p '$destination'"
+          [[ "$ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          destination="$DEPLOY_ROOT/releases/$SEQUENCE-$ATTEMPT-$SHA"
+          # Paths are validated above and intentionally expanded on the runner.
+          # shellcheck disable=SC2029
+          ssh "${ssh_options[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "mkdir '$destination'"
           rsync -az -e "ssh -i $HOME/.ssh/id_c156 -p $DEPLOY_PORT -o StrictHostKeyChecking=yes -o BatchMode=yes" "$RUNNER_TEMP/release/" "$DEPLOY_USER@$DEPLOY_HOST:$destination/"
           deploy_args=
           [[ "$PREPARE_ONLY" != true ]] || deploy_args=--prepare
+          # Paths are validated above and intentionally expanded on the runner.
+          # shellcheck disable=SC2029
           ssh "${ssh_options[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "bash '$destination/deploy.sh' '$DEPLOY_ROOT' '$destination' $deploy_args"
           rm -f "$HOME/.ssh/id_c156"

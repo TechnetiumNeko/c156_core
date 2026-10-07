@@ -33,3 +33,16 @@ class DeploymentPreflightTest(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn('registry digest', result.stderr)
             self.assertFalse((root / 'current').exists())
+
+    def test_first_install_has_no_previous_release_alias(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            common = SCRIPT.with_name('common.sh')
+            result = subprocess.run(['bash', '-c', 'source "$1"; DEPLOY_ROOT=$2; release_pointer "$2/current"', 'check', str(common), str(root)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, '')
+            target = root / 'releases' / 'first'; target.mkdir(parents=True)
+            (root / 'current').symlink_to(target)
+            result = subprocess.run(['bash', '-c', 'source "$1"; DEPLOY_ROOT=$2; release_pointer "$2/current"', 'check', str(common), str(root)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), str(target))

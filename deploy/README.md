@@ -28,6 +28,8 @@
 
 GitHub runner 从 Docker 官方仓库构建基础镜像，ECS 从 ACR 拉取成品镜像。阿里云 Docker Hub 加速器当前存在同步及使用范围限制，不应依赖它给 GitHub runner 提供最新基础镜像。镜像已固定官方 digest；若网络受限，维护者将相同基础镜像同步到可访问的 ACR，并更新 Dockerfile 引用。[阿里云加速器说明](https://help.aliyun.com/zh/acr/user-guide/accelerate-the-pulls-of-docker-official-images)
 
+本次沿用已有 ACR 个人版。阿里云将个人版定位为开发测试用途，不提供 SLA；若后续需要生产可用性保障，应再选择合适的仓库等级。[版本说明](https://help.aliyun.com/zh/acr/product-overview/differences-between-personal-edition-instances-and-enterprise-edition-instances)
+
 ACR 个人版兼容性处理：单平台 amd64，关闭构建 provenance/SBOM；推送的就是冒烟检查过的镜像，不重新构建。部署引用不可变 digest。更新基础镜像时需重新执行镜像检查。
 
 ## 朋友只需首次做这几步
@@ -63,6 +65,8 @@ bash /srv/c156/prepared/setup.sh /srv/c156 --init-db
 
 **4. 面板建立 HTTPS 站点，配置全站代理。**
 
+中国内地服务器通过域名对外提供网站服务前，需先确认相应备案已完成。[阿里云备案说明](https://help.aliyun.com/zh/icp-filing/basic-icp-service/support/for-the-record-process-faq)
+
 域名 DNS 指向 ECS。安全组和主机防火墙允许该站点 80/443。通过面板申请证书、启用 HTTPS 跳转，并确认自动续签任务和 ACME 验证入口正常。当前只知道面板能配置证书，自动续签尚未确认，首次上线需实际核对。
 
 在面板该站点的 `location /` 内包含下面一行；该 location 使用本项目代理片段，避免同时保留面板生成的另一份 `proxy_pass`：
@@ -97,7 +101,7 @@ client_max_body_size 2m;
   data/c156.sqlite        数据库；同目录保留 WAL/SHM
   assets/                 资产目录（为资产文件保留挂载）
   backups/                每次正式部署前的 SQLite 一致性快照
-  releases/<序号>-<SHA>/   配置、同版本脚本、source.tar.gz
+  releases/<序号>-<重跑次数>-<SHA>/   配置、同版本脚本、source.tar.gz
   nginx/proxy.inc          仅项目代理片段
   current                 当前成功发布
   previous                上一次成功发布

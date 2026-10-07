@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# shellcheck source=common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 root=${1:-/srv/c156}; action=${2:-}
 [[ -z $action || $action == --init-db ]] || fail 'usage: setup.sh [ROOT] [--init-db]'
