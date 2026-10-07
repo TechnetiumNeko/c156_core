@@ -16,6 +16,6 @@ def validate_display_name(value: str) -> str:
 
 
 def validate_password(value: str) -> str:
-    if not isinstance(value, str) or not 15 <= len(value) <= 128:
-        raise InvalidArgument('password must contain 15–128 characters')
+    if not isinstance(value, str) or not 8 <= len(value) <= 128:
+        raise InvalidArgument('password must contain 8–128 characters')
     return value

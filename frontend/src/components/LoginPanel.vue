@@ -28,7 +28,7 @@ async function submit() {
     <form class="mt-5" @submit.prevent="submit">
       <NFormItem v-if="mode === 'login'" label="账号" label-for="login-name"><NInput v-model:value="name" :disabled="busy || localBusy" :input-props="{autocomplete: 'username',id: 'login-name',required: true}" /></NFormItem>
       <NFormItem v-else label="一次性凭据" label-for="account-token"><NInput v-model:value="token" :disabled="localBusy" :input-props="{autocomplete: 'off',id: 'account-token',required: true}" /></NFormItem>
-      <NFormItem :label="mode === 'login' ? '密码' : '新密码（15–128 个字符）'" label-for="login-password"><NInput v-model:value="password" type="password" show-password-on="click"  :disabled="busy || localBusy" :input-props="{autocomplete: mode === 'login' ? 'current-password' : 'new-password',id: 'login-password',required: true, ...(mode === 'login' ? {} : {minlength: 15, maxlength: 128})}" /></NFormItem>
+      <NFormItem :label="mode === 'login' ? '密码' : '新密码（8–128 个字符）'" label-for="login-password"><NInput v-model:value="password" type="password" show-password-on="click"  :disabled="busy || localBusy" :input-props="{autocomplete: mode === 'login' ? 'current-password' : 'new-password',id: 'login-password',required: true, ...(mode === 'login' ? {} : {minlength: 8, maxlength: 128})}" /></NFormItem>
       <NFormItem v-if="mode !== 'login'" label="确认密码" label-for="confirm-password"><NInput v-model:value="confirmPassword" type="password" :disabled="localBusy" :input-props="{autocomplete: 'new-password',id: 'confirm-password',required: true}" /></NFormItem>
       <NButton block type="primary" attr-type="submit" :loading="busy || localBusy" :disabled="!ready || busy || localBusy">{{mode === 'login' ? '登录' : '设置密码'}}</NButton>
     </form>

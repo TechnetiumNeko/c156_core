@@ -21,13 +21,13 @@ export class AccountPanel {
     if (!user) {
       p.append(el('p', initialized ? '登录或使用管理员人工转交的凭据激活／重置账号。' : '尚未初始化账号。请在本机使用 bootstrap-admin 显式引导管理员。'));
       form(p,'登录',[['login_name','登录名'],['password','密码','password']],v=>this.run(()=>this.onLogin(v)));
-      for (const [kind,title] of [['activate','激活'],['reset','重置密码']]) form(p,title,[['token','一次性凭据'],['password','新密码（15–128 字符）','password']],v=>this.run(async()=>{await this.client[kind](v.token,v.password); this.render(null); p.prepend(el('p','密码已设置，请登录。'));}));
+      for (const [kind,title] of [['activate','激活'],['reset','重置密码']]) form(p,title,[['token','一次性凭据'],['password','新密码（8–128 字符）','password']],v=>this.run(async()=>{await this.client[kind](v.token,v.password); this.render(null); p.prepend(el('p','密码已设置，请登录。'));}));
       return;
     }
     p.append(el('p',`${user.display_name} (${user.login_name}) · ${user.status}`));
     button(p,'退出',()=>this.run(this.onLogout));
     form(p,'显示名',[['display_name','显示名']],v=>this.run(async()=>this.onProfile((await this.client.profile(v.display_name,this.getUser().version)).user),async()=>this.onProfile((await this.client.session()).user)));
-    form(p,'修改密码',[['old_password','原密码','password'],['new_password','新密码（15–128 字符）','password']],v=>this.run(()=>this.onPassword(v)));
+    form(p,'修改密码',[['old_password','原密码','password'],['new_password','新密码（8–128 字符）','password']],v=>this.run(()=>this.onPassword(v)));
     if (user.site_admin) {
       button(p,'刷新账号列表',()=>this.load());
       form(p,'创建账号',[['login_name','登录名'],['display_name','显示名']],v=>this.run(async()=>{this.grant(await this.client.createUser(v.login_name,v.display_name)); await this.load();}));
