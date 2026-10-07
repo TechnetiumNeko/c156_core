@@ -32,3 +32,23 @@ def set_role(request: Request, value=Depends(body(s.MemberRoleBody)), actor=Depe
 def remove_member(request: Request, value=Depends(body(s.UserTargetBody)), actor=Depends(write_identity)):
     services = request.app.state.services
     return {'workspace': workspace_access_json(services.access.remove_member(services.scope, **value.model_dump(), session_token=actor.session_token))}
+
+
+@router.put('/api/workspace/read-scope')
+def set_read_scope(request: Request, value=Depends(body(s.ReadScopeBody)), actor=Depends(write_identity)):
+    services = request.app.state.services
+    return {'workspace': workspace_access_json(services.access.set_read_scope(services.scope, **value.model_dump(), session_token=actor.session_token))}
+
+
+@router.post('/api/workspace/ownership')
+def transfer_ownership(request: Request, value=Depends(body(s.OwnershipBody)), actor=Depends(write_identity)):
+    services = request.app.state.services
+    return {'workspace': workspace_access_json(services.access.transfer_ownership(services.scope, **value.model_dump(), session_token=actor.session_token))}
+
+
+@router.post('/api/workspace/invitations', status_code=201)
+def invite_member(request: Request, value=Depends(body(s.InviteMemberBody)), actor=Depends(write_identity)):
+    from .serialization import account_grant_json
+    services = request.app.state.services
+    result = services.invitations.invite(services.scope, **value.model_dump(), session_token=actor.session_token)
+    return {**account_grant_json(result.grant), 'workspace': workspace_access_json(result.workspace)}

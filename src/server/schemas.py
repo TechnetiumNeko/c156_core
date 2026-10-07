@@ -75,3 +75,15 @@ class DeleteBody(StrictBody):
     expected_version: StrictInt
     recursive: StrictBool = False
     expected_subtree_token: StrictStr | None = None
+
+class ReadScopeBody(StrictBody):
+    read_scope: StrictStr
+    expected_version: StrictInt
+
+class OwnershipBody(StrictBody):
+    target_user_id: StrictStr
+    expected_version: StrictInt
+
+class InviteMemberBody(CreateUserBody):
+    role: StrictStr
+    expected_version: StrictInt

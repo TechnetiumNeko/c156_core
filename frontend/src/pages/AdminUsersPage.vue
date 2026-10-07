@@ -11,7 +11,7 @@ const {busy, message, run} = useManagement(props.client, error => emit('failure'
 const users = ref<User[]>([]); const grant = ref<AccountGrant | null>(null); const loginName = ref(''); const displayName = ref('');
 const labels = {activation: '重发激活', reset: '发起密码重置', disable: '停用账号', enable: '启用账号'};
 async function load() {users.value = (await props.client.listUsers()).users;}
-async function create() {await run(async () => {grant.value = await props.client.createUser(loginName.value, displayName.value); loginName.value = ''; displayName.value = ''; message.value = '账号已创建。请转交激活凭据，并在成员管理中添加工作区成员。'; await load();});}
+async function create() {await run(async () => {grant.value = await props.client.createUser(loginName.value, displayName.value); loginName.value = ''; displayName.value = ''; message.value = '账号已创建。请转交激活凭据，激活后可在工作区管理中添加成员。'; await load();});}
 async function act(action: UserAction, user: User) {
   if (!await confirm(labels[action], `确定对“${user.display_name}”执行${labels[action]}？重置和停用会撤销该账号的会话。`)) return;
   await run(async () => {const value = await props.client.userAction(action, user.id, user.version); if ('token' in value) grant.value = value; else grant.value = null; await load(); message.value = `${labels[action]}成功。`;});
@@ -23,7 +23,7 @@ async function toggleAdmin(user: User) {
 async function copy() {await run(async () => {if (grant.value) {await navigator.clipboard.writeText(grant.value.token); message.value = '凭据已复制，请私下转交。';}});}
 onMounted(() => {void run(load);});
 </script>
-<template><div class="page-container"><div class="toolbar-row justify-between"><h1 class="section-title">站点账号</h1><NButton :disabled="busy" @click="run(load)">刷新列表</NButton></div><p class="muted-copy">创建和管理登录账号。工作区成员资格在成员管理中设置。</p>
+<template><div class="page-container"><div class="toolbar-row justify-between"><h1 class="section-title">站点账号</h1><NButton :disabled="busy" @click="run(load)">刷新列表</NButton></div><p class="muted-copy">创建和管理登录账号。若要同时分配工作区角色，请使用工作区管理中的邀请功能。</p>
   <NAlert v-if="message" type="info" role="status" class="mb-5">{{message}}</NAlert>
   <section v-if="grant" class="surface-panel p-5 mb-6"><h2 class="section-title">{{grant.purpose === 'activate' ? '激活凭据' : '密码重置凭据'}}</h2><p class="muted-copy">{{grant.user.login_name}}，有效至 {{new Date(grant.expires_at).toLocaleString()}}。凭据仅在当前页面显示。</p><pre class="credential">{{grant.token}}</pre><div class="toolbar-row"><NButton :disabled="busy" @click="copy">复制凭据</NButton><NButton @click="grant = null">清除凭据</NButton></div></section>
   <section class="surface-panel p-5 mb-6"><h2 class="section-title mb-4">创建账号</h2><form class="flex gap-4 items-end flex-wrap" @submit.prevent="create"><NFormItem label="登录名" label-for="create-login"><NInput v-model:value="loginName" :disabled="busy" :input-props="{id: 'create-login',required: true}" /></NFormItem><NFormItem label="显示名" label-for="create-display"><NInput v-model:value="displayName" :disabled="busy" :input-props="{id: 'create-display',required: true}" /></NFormItem><NButton class="mb-6" type="primary" attr-type="submit" :loading="busy" :disabled="busy">创建账号</NButton></form></section>
