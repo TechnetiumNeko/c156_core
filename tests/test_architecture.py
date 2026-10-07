@@ -26,14 +26,16 @@ class TestArchitecture(unittest.TestCase):
             ('cli', ('src.file', 'src.storage.repository', 'sqlite3')),
             ('editor', ('src.file', 'src.storage', 'sqlite3')),
             ('web', ('src.cli', 'src.editor', 'src.file', 'src.storage.repository', 'sqlite3')),
-            ('services', ('src.cli', 'src.editor', 'src.web', 'src.file', 'sqlite3')),
-            ('core', ('src.storage', 'src.services', 'src.cli', 'src.editor', 'src.web', 'src.file', 'sqlite3')),
+            ('server', ('src.web', 'src.cli', 'src.editor', 'src.file', 'src.storage.repository', 'sqlite3')),
+            ('services', ('src.cli', 'src.editor', 'src.web', 'src.server', 'fastapi', 'starlette', 'src.file', 'sqlite3')),
+            ('core', ('src.storage', 'src.services', 'src.cli', 'src.editor', 'src.web', 'src.server', 'fastapi', 'starlette', 'src.file', 'sqlite3')),
+            ('storage', ('src.server', 'fastapi', 'starlette')),
         ):
             for path in (ROOT / 'src' / layer).glob('*.py'):
                 with self.subTest(path=path):
                     tree = ast.parse(path.read_text())
                     for imported in imports(path, tree):
-                        if layer in ('cli', 'editor', 'web'):
+                        if layer in ('cli', 'editor', 'web', 'server'):
                             self.assertFalse(imported.endswith('.Repository'), imported)
                         self.assertFalse(any(imported == name or imported.startswith(name + '.')
                                              for name in forbidden), imported)

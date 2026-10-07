@@ -1,0 +1,79 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { reactive } from 'vue';
+import { EditorState } from '../src/state/editor.ts';
+import type { Document } from '../src/api/types.ts';
+export const snapshot = (content = 'original', revision_id = 'r1'): Document => ({ id: 'doc', kind: 'document', name: 'Doc', parent_id: 'root', position: 0, version: 1, path: '/Doc', created_at: '', modified_at: '', metadata: {}, content, revision_id });
+function editor() {
+    const value = new EditorState();
+    value.setIdentity('alice');
+    value.open(snapshot());
+    return value;
+}
+test('save ticket survives Vue proxies and preserves input typed during save', () => {
+    const raw = editor();
+    raw.edit('sent');
+    const ticket = raw.beginSave()!;
+    const value = reactive(raw);
+    value.edit('new\n\n');
+    const load = value.beginLoad();
+    assert.equal(value.finishLoad(load, snapshot('unwanted')), false);
+    assert.equal(value.saveSucceeded(ticket, snapshot('sent', 'r2')), true);
+    assert.equal(value.draft, 'new\n\n');
+    assert.equal(value.revision, 'r2');
+    assert.equal(value.dirty, true);
+});
+test('network uncertainty retains original revision for retry and protects draft ownership', () => {
+    const value = editor();
+    value.edit('draft');
+    const ticket = value.beginSave()!;
+    value.saveFailed(ticket, 'network');
+    assert.equal(value.uncertainSave, true);
+    assert.equal(value.shouldWarnBeforeUnload, true);
+    assert.equal(value.beginSave()!.expected_revision_id, 'r1');
+    value.setIdentity(null);
+    assert.equal(value.setIdentity('bob'), false);
+    assert.equal(value.saveSucceeded(ticket, snapshot('draft', 'r9')), false);
+    assert.equal(value.draft, 'draft');
+    assert.equal(value.owner, 'alice');
+    assert.equal(value.setIdentity('alice'), true);
+    assert.equal(value.draft, 'draft');
+});
+test('conflict preserves draft and base until explicit merge', () => {
+    const value = editor();
+    value.edit('mine');
+    value.saveFailed(value.beginSave()!, 'conflict');
+    assert.equal(value.revision, 'r1');
+    const ticket = value.beginLatest();
+    assert.equal(value.setLatest(snapshot('theirs', 'r2'), value.epoch, ticket), true);
+    assert.equal(value.draft, 'mine');
+    assert.equal(value.revision, 'r1');
+    assert.equal(value.startMerge(ticket), true);
+    assert.equal(value.revision, 'r2');
+    assert.equal(value.comparisonDraft, 'mine');
+    assert.equal(value.hasUnsavedWork, true);
+});
+test('loads and latest responses are isolated and CRLF starts clean', () => {
+    const value = new EditorState();
+    value.setIdentity('alice');
+    const old = value.beginLoad();
+    const current = value.beginLoad();
+    assert.equal(value.finishLoad(old, snapshot()), false);
+    assert.equal(value.finishLoad(current, snapshot('a\r\n\r\n')), true);
+    assert.equal(value.draft, 'a\n\n');
+    assert.equal(value.dirty, false);
+    const latest = value.beginLatest();
+    value.setIdentity(null);
+    assert.equal(value.setLatest(snapshot(), latest.epoch, latest), false);
+});
+test('dirty document cannot be replaced by load, open, or foreign identity without discard', () => {
+    const value = editor();
+    value.edit('mine');
+    const ticket = value.beginLoad();
+    assert.equal(value.finishLoad(ticket, snapshot('replacement')), false);
+    assert.equal(value.open(snapshot()), false);
+    assert.equal(value.setIdentity('bob'), false);
+    assert.equal(value.setIdentity('bob', { discard: true }), true);
+    assert.equal(value.document, null);
+    assert.equal(value.draft, '');
+});
