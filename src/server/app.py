@@ -15,7 +15,7 @@ from ..services.unit_of_work import ApplicationUnitOfWork
 from ..storage import Database
 from ..storage.errors import StorageError
 from .config import ServerConfig
-from .errors import install_errors
+from .errors import install_errors, UnexpectedErrorBoundary
 from .transport import TransportGuard
 from .routes import router
 
@@ -57,6 +57,7 @@ def create_app(config: ServerConfig) -> FastAPI:
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.config = config
     install_errors(app)
+    app.add_middleware(UnexpectedErrorBoundary)
     app.add_middleware(TransportGuard, config=config)
     app.include_router(router)
     return app

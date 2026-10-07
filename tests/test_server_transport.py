@@ -1,5 +1,8 @@
 """Transport failures are bounded, strict and sanitized."""
 from unittest.mock import patch
+import httpx
+import traceback
+from src.server.errors import UnexpectedErrorBoundary
 from src.core.errors import Conflict, RateLimited, StorageBusy
 from tests.test_server_api import ServerFixture
 
@@ -27,7 +30,8 @@ class ServerTransportTest(ServerFixture):
         self.assertNotIn(sentinel, response.text)
         with patch.object(type(self.app.state.services.content), 'bootstrap', side_effect=RuntimeError(sentinel)):
             with self.assertLogs('src.server.errors', level='ERROR') as logs:
-                response = await self.client.get('/api/bootstrap')
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app, client=('127.0.0.1', 1234)), base_url='http://127.0.0.1:8001') as client:
+                    response = await client.get('/api/bootstrap')
         self.assert_error(response, 500)
         self.assertNotIn(sentinel, response.text)
         self.assertNotIn(sentinel, '\n'.join(logs.output))
@@ -41,3 +45,25 @@ class ServerTransportTest(ServerFixture):
             self.assertNotIn('private', response.text)
             if status == 429:
                 self.assertEqual(response.headers['retry-after'], '7')
+
+    async def test_failure_after_headers_aborts_without_original_exception(self):
+        sentinel = 'SENSITIVE-stream-error'
+        messages = []
+        async def failing_app(scope, receive, send):
+            await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+            await send({'type': 'http.response.body', 'body': b'partial', 'more_body': True})
+            raise ValueError(sentinel)
+        async def receive():
+            return {'type': 'http.request', 'body': b''}
+        async def send(message):
+            messages.append(message)
+        with self.assertLogs('src.server.errors', level='ERROR') as logs:
+            try:
+                await UnexpectedErrorBoundary(failing_app)({'type': 'http'}, receive, send)
+            except RuntimeError as error:
+                rendered = ''.join(traceback.format_exception(error))
+            else:
+                self.fail('An incomplete response must abort.')
+        self.assertNotIn(sentinel, rendered)
+        self.assertNotIn(sentinel, '\n'.join(logs.output))
+        self.assertEqual([message['type'] for message in messages], ['http.response.start', 'http.response.body'])

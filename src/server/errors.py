@@ -40,9 +40,37 @@ def install_errors(app):
                        409: 'Content changed.', 429: 'Too many requests.', 503: 'Service temporarily busy.'}.get(status, 'Invalid request.')
             if status == 429:
                 retry = max(1, int(error.details.get('retry_after', 1)))
-        else:
-            status, code, message = 500, 'internal_error', 'Internal server error.'
-            logger.error('request failed: %s', type(error).__name__)
         return error_response(status, code, message, secure=request.app.state.config.cookie_secure, retry_after=retry)
-    for kind in (RequestError, RequestValidationError, HTTPException, ContentError, Exception):
+    for kind in (RequestError, RequestValidationError, HTTPException, ContentError):
         app.add_exception_handler(kind, handle)
+
+
+class UnexpectedErrorBoundary:
+    """Consume failures before Starlette can re-raise them to server logging."""
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope['type'] != 'http':
+            return await self.app(scope, receive, send)
+        started = False
+        completed = False
+
+        async def tracked_send(message):
+            nonlocal started, completed
+            await send(message)
+            if message['type'] == 'http.response.start':
+                started = True
+            elif message['type'] == 'http.response.body' and not message.get('more_body', False):
+                completed = True
+
+        try:
+            await self.app(scope, receive, tracked_send)
+        except Exception as error:
+            logger.error('request failed: %s', type(error).__name__)
+            if not started:
+                await error_response(500, 'internal_error', 'Internal server error.')(scope, receive, send)
+            elif not completed:
+                # Headers are irrevocable. Signal abort without the original error
+                # or its exception chain entering Uvicorn's traceback logging.
+                raise RuntimeError('Response aborted after headers were sent.') from None
