@@ -35,7 +35,7 @@ ls deploy/setup.sh
 docker info >/dev/null && echo 'Docker OK'
 docker compose version
 nginx -v
-command -v curl flock tar rsync ss
+command -v git curl flock tar ss
 ```
 
 **正常结果：** 仓库克隆成功，显示 deploy/setup.sh 路径；随后有 `Docker OK`、Compose 和 Nginx 版本；最后显示五个命令的路径。
@@ -79,6 +79,8 @@ bash "$HOME/c156/deploy/setup.sh"
 
 **正常结果：** 最后一行包含 `Directories ready`，并列出 data、assets、backups 的路径。
 
+APP_UID 和 APP_GID 留空时，setup 会自动填写部署账号的 UID/GID，容器使用同一身份访问数据，通常无需 chown。若你已复制旧配置中的 10001，把这两项清空后再运行 setup。明确使用自定义 UID/GID 时需提前安排目录权限，见 [E02](TROUBLESHOOTING.md#e02)。
+
 **失败定位：** [E03 配置、端口或网络](TROUBLESHOOTING.md#e03)；[E02 权限或组件](TROUBLESHOOTING.md#e02)；[E08 Nginx 路径](TROUBLESHOOTING.md#e08)。
 
 ## 3. 准备镜像访问，维护者准备发布
@@ -106,19 +108,19 @@ docker login YOUR_ACR_REGISTRY
 **朋友确认：**
 
 ```bash
-ls "$HOME/c156/prepared/compose.yaml"
+test -s "$HOME/c156/images.env" && echo 'Images ready'
 ```
 
-**正常结果：** 显示 `/home/deploy/c156/prepared/compose.yaml`。这一步只准备文件和镜像，网站尚未启动。
+**正常结果：** 显示 `Images ready`。这一步只准备文件和镜像，网站尚未启动。
 
-**失败定位：** [E04 ACR 登录或拉镜像失败](TROUBLESHOOTING.md#e04)；[E05 SSH 失败](TROUBLESHOOTING.md#e05)；[E06 Actions 或 prepared 缺失](TROUBLESHOOTING.md#e06)。
+**失败定位：** [E04 ACR 登录或拉镜像失败](TROUBLESHOOTING.md#e04)；[E05 SSH 失败](TROUBLESHOOTING.md#e05)；[E06 Actions 或 images.env 缺失](TROUBLESHOOTING.md#e06)。
 
 ## 4. 朋友：创建新库和管理员
 
 **仅第一次创建空库时运行：**
 
 ```bash
-bash "$HOME/c156/prepared/setup.sh" "$HOME/c156" --init-db
+bash "$HOME/c156/deploy/setup.sh" "$HOME/c156" --init-db
 ```
 
 看到 `Password:` 后输入网站管理员密码；看到 `Confirm password:` 再输一次。输入时屏幕不显示字符，这是正常的。网站账号固定为 **admin**，密码是这里设置的，与 ACR 密码无关。
@@ -173,29 +175,31 @@ curl -fsS https://YOUR_DOMAIN/api/healthz
 
 **失败定位：** [E06 Actions 失败](TROUBLESHOOTING.md#e06)；[E10 502 或容器不健康](TROUBLESHOOTING.md#e10)；[E11 登录或 API 403](TROUBLESHOOTING.md#e11)；[E12 版本检查失败](TROUBLESHOOTING.md#e12)。
 
-首次安装到这里结束。以后推送 main 自动更新 **test**；更新 **prod** 时，维护者手动 Run workflow，选择 **prod**。朋友无需拉代码或手动构建。更新可能有短暂中断。
+首次安装到这里结束。以后 Actions 会自动拉取源码、检出本次构建的提交、拉镜像并执行 Compose 更新；没有 releases 目录和版本软链接。推送 main 自动更新 **test**；更新 **prod** 时，维护者手动 Run workflow，选择 **prod**。朋友无需拉代码或手动构建。更新可能有短暂中断。
 
 ## 日常只记住这三件事
 
-**下载备份：** 用面板下载 `/home/deploy/c156/backups/` 中已经完成的 `.sqlite` 快照。不要只下载运行中的 `data/c156.sqlite`；它可能还有 WAL 数据。资产目录 `/home/deploy/c156/assets/` 另行打包。源码在每个 release 的 `source.tar.gz`，无需服务器 `git pull`。
+**下载备份：** 用面板下载 `/home/deploy/c156/backups/` 中已经完成的 `.sqlite` 快照。不要只下载运行中的 `data/c156.sqlite`；它可能还有 WAL 数据。资产目录 `/home/deploy/c156/assets/` 另行打包。源码在克隆的仓库里；Actions 每次会自动拉取并检出本次提交，无需手动 git pull。
 
 **手动备份：** 在服务器复制运行：
 
 ```bash
-bash -c 'source "$HOME/c156/current/common.sh"; load_config "$HOME/c156"; compose_for "$HOME/c156/current" exec -T backend python -m src.storage backup --database /data/c156.sqlite --output /backups/manual-$(date -u +%Y%m%dT%H%M%S).sqlite'
+bash -c 'source "$HOME/c156/deploy/common.sh"; load_config "$HOME/c156"; compose_for "$HOME/c156" exec -T backend python -m src.storage backup --database /data/c156.sqlite --output /backups/manual-$(date -u +%Y%m%dT%H%M%S).sqlite'
 ```
 
 正常时命令无报错结束，backups 中出现新的 `manual-…sqlite`。
 
-**回退上一次成功发布：**
+**查看容器和日志：**
 
 ```bash
-bash "$HOME/c156/current/rollback.sh" "$HOME/c156"
+cd "$HOME/c156"
+source deploy/common.sh
+load_config "$PWD"
+compose_for "$PWD" ps
+compose_for "$PWD" logs --tail 100 backend frontend
 ```
 
-正常时最后显示 `Deployed …`。只有一个成功版本时无法回退。回退保留当前数据库和资产，不用旧快照覆盖新数据。
-
-以上操作报错，或磁盘快满了，查 [E13 备份、回退和空间](TROUBLESHOOTING.md#e13)。
+发布失败不会自动回退。修复当前错误后重新发布；需要恢复旧版本时找维护者处理，见 [E13](TROUBLESHOOTING.md#e13)。不删除数据库或资产。
 
 <a id="panel-proxy"></a>
 

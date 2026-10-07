@@ -1,115 +1,70 @@
 #!/usr/bin/env bash
+# Actions streams this script over SSH; it updates the cloned checkout and Compose.
 set -euo pipefail
 umask 077
-# shellcheck source=common.sh
-source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
-[[ $# == 2 || $# == 3 ]] || fail 'usage: deploy.sh ROOT RELEASE_DIR [--prepare|--rollback]'
-load_config "$1"
-release=$(realpath -e "$2"); action=${3:-}
-[[ $release == "$DEPLOY_ROOT/releases/"* && $release != *'/../'* ]] || fail 'release must be inside deployment releases directory'
-[[ -z $action || $action == --prepare || $action == --rollback ]] || fail 'invalid deployment action'
-load_release "$release"
-candidate_sha=$BUILD_SHA; candidate_sequence=$DEPLOY_SEQUENCE
-exec 9>"$DEPLOY_ROOT/deploy.lock"
-flock -w 300 9 || fail 'another deployment holds the lock'
-old=$(release_pointer "$DEPLOY_ROOT/current")
-previous=$(release_pointer "$DEPLOY_ROOT/previous")
+abort() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+[[ $# == 5 || $# == 6 ]] || abort 'usage: deploy.sh ROOT SHA BACKEND_DIGEST FRONTEND_DIGEST SEQUENCE [--prepare]'
+root=$1; candidate_sha=$2; backend=$3; frontend=$4; sequence=$5; action=${6:-}
+[[ $root =~ ^/[a-zA-Z0-9_./-]+$ && $root != / && $root != *'//'* && $root != *'/./'* && $root != *'/../'* && $root != */. && $root != */.. && $root != */ ]] || abort 'invalid deployment root'
+[[ $candidate_sha =~ ^[0-9a-f]{40}$ && $sequence =~ ^[1-9][0-9]{0,14}$ ]] || abort 'invalid deployment SHA or sequence'
+[[ -z $action || $action == --prepare ]] || abort 'invalid deployment action'
+for image in "$backend" "$frontend"; do
+  [[ $image =~ ^[a-zA-Z0-9._:/-]+@sha256:[0-9a-f]{64}$ ]] || abort 'image must use a registry digest'
+done
+[[ -d $root/.git ]] || abort 'clone the repository into the deployment root first'
+[[ -f $root/config.env ]] || abort 'create config.env and run setup.sh first'
+command -v flock >/dev/null || abort 'missing command: flock'
+exec 9>"$root/deploy.lock"
+flock -w 300 9 || abort 'another deployment holds the lock'
 watermark=0
-if [[ -f $DEPLOY_ROOT/sequence ]]; then
-  read -r watermark < "$DEPLOY_ROOT/sequence"
-  [[ $watermark =~ ^[0-9]{1,15}$ ]] || fail 'invalid sequence state'
+if [[ -f $root/.deploy-sequence ]]; then
+  read -r watermark < "$root/.deploy-sequence"
+  [[ $watermark =~ ^[0-9]{1,15}$ ]] || abort 'invalid deployment sequence state'
 fi
-if [[ $action != --rollback ]] && (( candidate_sequence <= watermark )); then
-  [[ $release == "$old" && $candidate_sequence == "$watermark" ]] && { printf 'Already deployed.\n'; exit 0; }
-  fail 'stale deployment rejected'
-fi
-if [[ $action == --rollback ]]; then [[ -n $previous && $release == "$previous" ]] || fail 'rollback target must be previous successful release'; fi
+(( sequence >= watermark )) || abort 'stale deployment rejected'
+cd "$root"
+[[ -z $(git status --porcelain --untracked-files=no) ]] || abort 'tracked files have local changes; commit or resolve them before deployment'
+git fetch origin main
+# Deploy exactly the tested commit, never the moving tip of main.
+git merge-base --is-ancestor "$candidate_sha" FETCH_HEAD || abort 'deployment commit is not on origin/main'
+git checkout --detach "$candidate_sha"
+# shellcheck source=common.sh
+source "$root/deploy/common.sh"
+load_config "$root"
+[[ $SITE_DOMAIN != docs.example.com ]] || fail 'set your real SITE_DOMAIN first'
 check_environment
-compose_for "$release" config --quiet
-compose_for "$release" pull
-atomic_link() {
-  local target=$1 link=$2
-  ln -s "$target" "$link.new.$$"
-  mv -Tf "$link.new.$$" "$link"
-}
+for directory in data assets backups nginx; do
+  [[ -d $root/$directory ]] || fail 'run setup.sh first: runtime directory missing'
+done
+printf 'BUILD_SHA=%s\nBACKEND_IMAGE=%s\nFRONTEND_IMAGE=%s\nDEPLOY_SEQUENCE=%s\n' "$candidate_sha" "$backend" "$frontend" "$sequence" > "$root/images.env.new.$$"
+mv -f "$root/images.env.new.$$" "$root/images.env"
+compose_for "$root" config --quiet
+compose_for "$root" pull
 if [[ $action == --prepare ]]; then
-  atomic_link "$release" "$DEPLOY_ROOT/prepared"
-  printf 'Release prepared. Run setup.sh ROOT --init-db only for a new library.\n'
+  printf 'Images prepared. For a new library run: bash deploy/setup.sh %s --init-db\n' "$root"
   exit 0
 fi
-[[ -f $DEPLOY_ROOT/data/c156.sqlite ]] || fail 'database missing: explicit initialization required'
-backup="before-${candidate_sequence}-$(date -u +%Y%m%dT%H%M%S)-$$.sqlite"
-# Candidate image must be able to snapshot the existing schema before it starts.
-compose_for "$release" run --rm -T --no-deps backend python -m src.storage backup --database /data/c156.sqlite --output "/backups/$backup"
+[[ -f $root/data/c156.sqlite ]] || fail 'database missing: explicit initialization required'
+backup="before-${sequence}-$(date -u +%Y%m%dT%H%M%S)-$$.sqlite"
+compose_for "$root" run --rm -T --no-deps backend python -m src.storage backup --database /data/c156.sqlite --output "/backups/$backup"
+compose_for "$root" up -d --wait --wait-timeout 90
 probe() {
   local base=$1 path=$2 expected=$3 body
   body=$(curl --fail --silent --show-error --connect-timeout 5 --max-time 10 -H "Host: $SITE_DOMAIN" "$base$path") || return 1
   body=$(printf '%s' "$body" | tr -d '[:space:]')
   [[ $body == "$expected" ]]
 }
-proxy=$DEPLOY_ROOT/nginx/proxy.inc
-proxy_saved=$DEPLOY_ROOT/nginx/.proxy.before.$$
-proxy_existed=0; switched=0; success=0; state_started=0
-state_current=$DEPLOY_ROOT/.current.before.$$
-state_previous=$DEPLOY_ROOT/.previous.before.$$
-[[ -z $old ]] || ln -s "$old" "$state_current"
-[[ -z $previous ]] || ln -s "$previous" "$state_previous"
-if [[ -f $proxy ]]; then cp -p "$proxy" "$proxy_saved"; proxy_existed=1; fi
-restore_on_exit() {
-  local status=$?
-  if (( success == 0 && switched == 1 )); then
-    printf 'Deployment failed; restoring prior configuration and containers.\n' >&2
-    local recovery_failed=0
-    if (( state_started )); then
-      if [[ -n $old ]]; then mv -Tf "$state_current" "$DEPLOY_ROOT/current" || recovery_failed=1; else rm -f "$DEPLOY_ROOT/current" || recovery_failed=1; fi
-      if [[ -n $previous ]]; then mv -Tf "$state_previous" "$DEPLOY_ROOT/previous" || recovery_failed=1; else rm -f "$DEPLOY_ROOT/previous" || recovery_failed=1; fi
-    fi
-    if [[ $NGINX_MANAGED == 1 ]]; then
-      if (( proxy_existed )); then mv -f "$proxy_saved" "$proxy"; else rm -f "$proxy"; fi
-      "$NGINX_BIN" -t && "$NGINX_BIN" -s reload || recovery_failed=1
-    fi
-    if [[ -n $old && -d $old ]]; then
-      compose_for "$old" up -d --wait --wait-timeout 90 || recovery_failed=1
-      load_release "$old"
-      probe "http://127.0.0.1:$APP_PORT" /api/healthz "{\"status\":\"ok\",\"build_sha\":\"$BUILD_SHA\"}" || recovery_failed=1
-      probe "https://$SITE_DOMAIN" /build-info.json "{\"build_sha\":\"$BUILD_SHA\"}" || recovery_failed=1
-    else
-      printf 'First deployment has no successful release to restore; inspect containers.\n' >&2
-    fi
-    (( recovery_failed == 0 )) || printf 'ERROR: rollback failed; manual repair required. Data was retained.\n' >&2
-  fi
-  rm -f "$proxy_saved" "$state_current" "$state_previous" "$DEPLOY_ROOT/sequence.new.$$"
-  exit "$status"
-}
-trap restore_on_exit EXIT
-switched=1
-compose_for "$release" up -d --wait --wait-timeout 90
-
-for attempt in {1..12}; do
-  if probe "http://127.0.0.1:$APP_PORT" /build-info.json "{\"build_sha\":\"$candidate_sha\"}" &&
-     probe "http://127.0.0.1:$APP_PORT" /api/healthz "{\"status\":\"ok\",\"build_sha\":\"$candidate_sha\"}"; then break; fi
-  (( attempt < 12 )) || fail 'local readiness/version check failed'
-  sleep 2
-done
+probe "http://127.0.0.1:$APP_PORT" /build-info.json "{\"build_sha\":\"$candidate_sha\"}" || fail 'local frontend/version check failed'
+probe "http://127.0.0.1:$APP_PORT" /api/healthz "{\"status\":\"ok\",\"build_sha\":\"$candidate_sha\"}" || fail 'local API check failed'
 if [[ $NGINX_MANAGED == 1 ]]; then
-  sed "s/@APP_PORT@/$APP_PORT/g" "$release/nginx-proxy.inc.template" > "$proxy.new.$$"
-  chmod 644 "$proxy.new.$$"
-  mv -f "$proxy.new.$$" "$proxy"
+  sed "s/@APP_PORT@/$APP_PORT/g" "$root/deploy/nginx-proxy.inc.template" > "$root/nginx/proxy.inc.new.$$"
+  chmod 644 "$root/nginx/proxy.inc.new.$$"
+  mv -f "$root/nginx/proxy.inc.new.$$" "$root/nginx/proxy.inc"
   "$NGINX_BIN" -t
   "$NGINX_BIN" -s reload
 fi
 probe "https://$SITE_DOMAIN" /build-info.json "{\"build_sha\":\"$candidate_sha\"}" || fail 'public HTTPS frontend/version check failed'
 probe "https://$SITE_DOMAIN" /api/healthz "{\"status\":\"ok\",\"build_sha\":\"$candidate_sha\"}" || fail 'public HTTPS API check failed'
-# Success pointers advance only after all probes pass. Database is never restored automatically.
-if (( candidate_sequence > watermark )); then
-  printf '%s\n' "$candidate_sequence" > "$DEPLOY_ROOT/sequence.new.$$"
-fi
-state_started=1
-if [[ -n $old && $old != "$release" ]]; then atomic_link "$old" "$DEPLOY_ROOT/previous"; fi
-atomic_link "$release" "$DEPLOY_ROOT/current"
-# Sequence is committed last; a preceding failure restores both success links.
-if (( candidate_sequence > watermark )); then
-  mv -Tf "$DEPLOY_ROOT/sequence.new.$$" "$DEPLOY_ROOT/sequence"
-fi
-success=1
-printf 'Deployed %s; backup %s/backups/%s\n' "$candidate_sha" "$DEPLOY_ROOT" "$backup"
+printf '%s\n' "$sequence" > "$root/.deploy-sequence.new.$$"
+mv -f "$root/.deploy-sequence.new.$$" "$root/.deploy-sequence"
+printf 'Deployed %s; backup %s/backups/%s\n' "$candidate_sha" "$root" "$backup"

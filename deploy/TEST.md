@@ -2,7 +2,7 @@
 
 你的 test 服务器用 **deploy 用户**，项目目录是 **/home/deploy/c156**，ACR 仓库公开。
 
-**2026-10-07 检查记录：下面 6 项 Variables、4 项 Secrets 已全部存在，Variables 基础格式正确。** GitHub 不提供 Secret 值的回读，尚未验证私钥、公钥是否匹配、ACR 密码是否有效或实际网络是否可达。
+**2026-10-07 检查记录：下面 6 项 Variables、4 项 Secrets 已全部存在。** 首次 main 流水线已通过测试、镜像构建、ACR 推送和 SSH 登录；因服务器尚未运行 setup 而停止。配置名称不因本次简化而变化。
 
 ## 1. GitHub 配这 8 项，另有 2 项可选
 
@@ -59,7 +59,7 @@ DEPLOY_ROOT 保持留空即可；setup 会自动写入实际目录，**无需手
 
 保存 config.env 后运行 `bash "$HOME/c156/deploy/setup.sh"`，看到 `Directories ready` 再继续。权限错误交给服务器管理员处理，不给 data 目录 chmod 777。
 
-[部署手册](README.md)的终端命令默认使用当前用户的 $HOME/c156；你的 Nginx include 绝对路径为 /home/deploy/c156/nginx/proxy.inc。代码、config.env 和运行目录都在同一个 ~/c156 下；配置及发布状态已加入 Git 忽略。
+[部署手册](README.md)的终端命令默认使用当前用户的 $HOME/c156；你的 Nginx include 绝对路径为 /home/deploy/c156/nginx/proxy.inc。代码、config.env 和运行目录都在同一个 ~/c156 下；config.env、images.env 及运行状态已加入 Git 忽略。后续 Actions 自动 git fetch 并检出本次提交；不要在服务器修改受 Git 跟踪的源码。
 
 ## 3. 下一步怎么点
 
@@ -68,7 +68,7 @@ DEPLOY_ROOT 保持留空即可；setup 会自动写入实际目录，**无需手
 1. Actions → **Test, build and deploy** → **Run workflow**。
 2. 分支选 **main**，target_environment 选 **test**，**勾选 prepare_only**。
 3. 等 checks、images、deploy 都变绿。
-4. 在服务器检查 `/home/deploy/c156/prepared/compose.yaml` 是否存在。
+4. 在服务器运行 `test -s ~/c156/images.env && echo 'Images ready'`，确认镜像配置已写入。
 5. 仅新空库运行初始化、设置管理员密码；配置面板域名、HTTPS 和代理，按照[手册第 4～5 步](README.md)做，记得替换目录。
 6. 再次 Run workflow，仍选 main／test，**不勾选 prepare_only**，正式发布。
 
