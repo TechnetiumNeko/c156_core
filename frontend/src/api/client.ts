@@ -62,6 +62,9 @@ export class ApiClient {
   addMember(login_name: string, role: string, expected_version: number) { return this.request<WorkspaceResponse>('/api/workspace/members', workspace, 'POST', {login_name, role, expected_version}, 'csrf'); }
   setMemberRole(user_id: string, role: string, expected_version: number) { return this.request<WorkspaceResponse>('/api/workspace/members', workspace, 'PUT', {user_id, role, expected_version}, 'csrf'); }
   removeMember(user_id: string, expected_version: number) { return this.request<WorkspaceResponse>('/api/workspace/members', workspace, 'DELETE', {user_id, expected_version}, 'csrf'); }
+  inviteMember(login_name: string, display_name: string, role: string, expected_version: number) { return this.request<import('./types.ts').WorkspaceInvitationResponse>('/api/workspace/invitations', value => grant(value) && workspace(value), 'POST', {login_name, display_name, role, expected_version}, 'csrf'); }
+  setReadScope(read_scope: string, expected_version: number) { return this.request<WorkspaceResponse>('/api/workspace/read-scope', workspace, 'PUT', {read_scope, expected_version}, 'csrf'); }
+  transferOwnership(target_user_id: string, expected_version: number) { return this.request<WorkspaceResponse>('/api/workspace/ownership', workspace, 'POST', {target_user_id, expected_version}, 'csrf'); }
   createFolder(parent_id: string, name: string) { return this.request<NodeResponse>('/api/folder', nodeResponse, 'POST', {parent_id, name}, 'csrf'); }
   createDocument(parent_id: string, name: string, visibility: 'inherit' | 'private' = 'inherit') { return this.request<DocumentResponse>('/api/document', document, 'POST', {parent_id, name, visibility}, 'csrf'); }
   renameNode(object_id: string, name: string, expected_version: number) { return this.request<NodeResponse>('/api/node/rename', nodeResponse, 'PUT', {object_id, name, expected_version}, 'csrf'); }

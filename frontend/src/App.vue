@@ -146,7 +146,7 @@ onUnmounted(() => { window.removeEventListener('beforeunload', beforeUnload); wi
         <NButton :type="page === 'documents' ? 'primary' : 'default'" quaternary :disabled="navigationBusy" @click="page = 'documents'">文档</NButton>
         <NButton :type="page === 'account' ? 'primary' : 'default'" quaternary :disabled="navigationBusy" @click="page = 'account'">个人账号</NButton>
         <NButton v-if="session.user.site_admin" :type="page === 'admin' ? 'primary' : 'default'" quaternary :disabled="navigationBusy" @click="page = 'admin'">站点账号</NButton>
-        <NButton v-if="managesWorkspace" :type="page === 'members' ? 'primary' : 'default'" quaternary :disabled="navigationBusy" @click="page = 'members'">成员管理</NButton>
+        <NButton v-if="managesWorkspace" :type="page === 'members' ? 'primary' : 'default'" quaternary :disabled="navigationBusy" @click="page = 'members'">工作区管理</NButton>
       </nav>
       <div v-if="session.user" class="toolbar-row ml-auto"><span class="text-sm text-muted max-w-36 truncate">{{session.user.display_name}}</span><NButton size="small" :disabled="navigationBusy" @click="logout">退出</NButton></div>
     </header>
@@ -175,7 +175,7 @@ onUnmounted(() => { window.removeEventListener('beforeunload', beforeUnload); wi
     <template v-if="session.user">
       <AccountPage v-if="page === 'account'" :key="session.epoch" :client="client" :user="session.user" :workspace-role="session.workspaceRole" @profile="session.user = $event" @revoked="passwordRevoked" @failure="failure($event, session.epoch)" />
       <AdminUsersPage v-if="page === 'admin' && session.user.site_admin" :key="session.epoch" :client="client" :user="session.user" @profile="session.user = $event" @failure="failure($event, session.epoch)" />
-      <MembersPage v-if="page === 'members' && managesWorkspace" :key="session.epoch" :client="client" :user="session.user" @refresh="bootstrap" @failure="failure($event, session.epoch)" />
+      <MembersPage v-if="page === 'members' && managesWorkspace" :key="session.user.id" :client="client" :user="session.user" :workspace-role="session.workspaceRole" @refresh="bootstrap" @failure="failure($event, session.epoch)" />
     </template>
     <FileActions :show="files.visible.value" :name="files.name.value" :action="files.action.value" :busy="fileBusy || !!editor.saving" :private-document="files.privateDocument.value" :can-create-private="['editor', 'admin', 'owner'].includes(session.workspaceRole ?? '')" :error="files.error.value" @update:private-document="files.privateDocument.value = $event" @update:name="files.name.value = $event" @close="files.close" @submit="files.submit" />
   </div>

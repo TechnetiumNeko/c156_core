@@ -14,3 +14,5 @@ export interface WorkspaceResponse { workspace: Workspace }
 export interface NodeResponse { node: Node; access?: Access }
 export interface DeletePlan { object_id: string; version: number; subtree_token: string; items: { node: Node; depth: number }[] }
 export type UserAction = 'activation' | 'reset' | 'disable' | 'enable';
+
+export interface WorkspaceInvitationResponse extends AccountGrant { workspace: Workspace }

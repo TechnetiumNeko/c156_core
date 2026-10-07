@@ -66,6 +66,10 @@ class ManagementAPITest(ServerFixture):
         self.client.cookies.set('c156_session', grant.session_token, domain='127.0.0.1', path='/')
         self.assertEqual((await self.client.get('/api/admin/users')).status_code, 200)
         self.assert_error(await self.client.get('/api/workspace/members'), 403)
+        self.csrf = grant.csrf_token
+        denied = await self.write('POST', '/api/workspace/invitations', {'login_name': 'noauthority', 'display_name': '无工作区授权', 'role': 'reader', 'expected_version': removed.json()['workspace']['version']})
+        self.assert_error(denied, 403)
+        self.assertNotIn('noauthority', [item['login_name'] for item in (await self.client.get('/api/admin/users')).json()['users']])
 
     async def test_nodes_versions_and_delete_snapshot(self):
         await self.setup_admin()
@@ -99,3 +103,49 @@ class ManagementAPITest(ServerFixture):
         self.assert_error(await self.write('POST', '/api/admin/users', {'login_name': 'forged', 'display_name': '伪造', 'site_admin': True}), 422)
         self.assert_error(await self.write('PUT', '/api/node/rename', {'object_id': self.root, 'name': '根', 'expected_version': True}), 422)
         self.assert_error(await self.client.get('/api/admin/users?user_id=forged'), 400)
+
+    async def test_default_workspace_settings_and_ownership(self):
+        await self.setup_admin()
+        user = await self.create_member()
+        version = (await self.client.get('/api/workspace/members')).json()['workspace']['version']
+        added = await self.write('POST', '/api/workspace/members', {'login_name': 'member', 'role': 'editor', 'expected_version': version})
+        self.assertEqual(added.status_code, 200, added.text)
+        version = added.json()['workspace']['version']
+        changed = await self.write('PUT', '/api/workspace/read-scope', {'read_scope': 'authenticated', 'expected_version': version})
+        self.assertEqual(changed.status_code, 200, changed.text)
+        self.assertEqual(changed.json()['workspace']['read_scope'], 'authenticated')
+        self.assert_error(await self.write('PUT', '/api/workspace/read-scope', {'read_scope': 'everyone', 'expected_version': version}), 409)
+        version = changed.json()['workspace']['version']
+        transferred = await self.write('POST', '/api/workspace/ownership', {'target_user_id': user['id'], 'expected_version': version})
+        self.assertEqual(transferred.status_code, 200, transferred.text)
+        members = {item['user']['login_name']: item['role'] for item in transferred.json()['workspace']['members']}
+        self.assertEqual(members, {'admin': 'admin', 'member': 'owner'})
+        self.assert_error(await self.write('POST', '/api/workspace/ownership', {'target_user_id': user['id'], 'expected_version': transferred.json()['workspace']['version']}), 403)
+
+    async def test_invitation_preconfigures_role_and_activation_keeps_it(self):
+        await self.setup_admin()
+        version = (await self.client.get('/api/workspace/members')).json()['workspace']['version']
+        invite = await self.write('POST', '/api/workspace/invitations', {'login_name': 'writer', 'display_name': '新编辑', 'role': 'editor', 'expected_version': version})
+        self.assertEqual(invite.status_code, 201, invite.text)
+        grant = invite.json()
+        pending = next(item for item in grant['workspace']['members'] if item['user']['login_name'] == 'writer')
+        self.assertEqual((pending['user']['status'], pending['role']), ('invited', 'editor'))
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app), base_url='http://127.0.0.1:8001') as guest:
+            nonce = (await guest.get('/api/bootstrap')).json()['nonce']
+            login_body = {'login_name': 'writer', 'password': 'abcdefgh'}
+            self.assert_error(await guest.post('/api/auth/login', json=login_body, headers={'X-C156-Nonce': nonce}), 401)
+            activated = await guest.post('/api/auth/activate', json={'token': grant['token'], 'password': 'abcdefgh'}, headers={'X-C156-Nonce': nonce})
+            self.assertEqual(activated.status_code, 200, activated.text)
+            login = await guest.post('/api/auth/login', json=login_body, headers={'X-C156-Nonce': nonce})
+            self.assertEqual(login.status_code, 200, login.text)
+            state = (await guest.get('/api/bootstrap')).json()
+            self.assertEqual(state['workspace_role'], 'editor')
+            created = await guest.post('/api/document', json={'parent_id': state['root']['id'], 'name': '激活后创建'}, headers={'X-C156-CSRF': login.json()['csrf']})
+            self.assertEqual(created.status_code, 201, created.text)
+        denied = await self.write('POST', '/api/workspace/invitations', {'login_name': 'notcreated', 'display_name': '不可创建', 'role': 'owner', 'expected_version': grant['workspace']['version']})
+        self.assert_error(denied, 400)
+        stale = await self.write('POST', '/api/workspace/invitations', {'login_name': 'stalewriter', 'display_name': '过期邀请', 'role': 'reader', 'expected_version': version})
+        self.assert_error(stale, 409)
+        names = [item['login_name'] for item in (await self.client.get('/api/admin/users')).json()['users']]
+        self.assertNotIn('notcreated', names)
+        self.assertNotIn('stalewriter', names)

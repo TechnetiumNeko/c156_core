@@ -49,19 +49,24 @@ class AccountService:
             self._admin(work, session_token)
             return tuple(user_view(user) for user in work.identity.list_users())
 
-    def create_user(self, login_name, display_name, *, session_token):
+    @classmethod
+    def _create_invited_user(cls, work, login_name, display_name, actor):
+        """Shared creation step; caller owns the identity-checked transaction."""
         login_name = normalize_login_name(login_name)
         display_name = validate_display_name(display_name)
+        if work.identity.get_user_by_login_name(login_name):
+            raise AlreadyExists('login name already exists')
+        now = work.now.isoformat()
+        user = UserRecord(str(uuid4()), login_name, display_name, 'invited', False, 1, 1, now, now)
+        work.identity.insert_user(user)
+        grant = cls._grant(work, user, 'activate')
+        cls._audit(work, actor, None, user, 'create')
+        return grant
+
+    def create_user(self, login_name, display_name, *, session_token):
         with self._uow.transaction(write=True) as work:
             actor = self._admin(work, session_token)
-            if work.identity.get_user_by_login_name(login_name):
-                raise AlreadyExists('login name already exists')
-            now = work.now.isoformat()
-            user = UserRecord(str(uuid4()), login_name, display_name, 'invited', False, 1, 1, now, now)
-            work.identity.insert_user(user)
-            grant = self._grant(work, user, 'activate')
-            self._audit(work, actor, None, user, 'create')
-            return grant
+            return self._create_invited_user(work, login_name, display_name, actor)
 
     def _change(self, user_id, *, session_token, expected_version, operation, enabled=None):
         with self._uow.transaction(write=True) as work:

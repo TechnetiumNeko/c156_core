@@ -13,6 +13,7 @@ from ..services.content import ContentService
 from ..services.identity import IdentityService
 from ..services.accounts import AccountService
 from ..services.access import AccessService
+from ..services.workspace_invitations import WorkspaceInvitationService
 from ..services.unit_of_work import ApplicationUnitOfWork
 from ..storage import Database
 from ..storage.errors import StorageError
@@ -30,6 +31,7 @@ class ServerServices:
     nonce: str
     accounts: AccountService
     access: AccessService
+    invitations: WorkspaceInvitationService
 
 
 def _services(config):
@@ -46,7 +48,7 @@ def _services(config):
             f'已有空库的首个管理员：python -m src.identity bootstrap-admin --database {path} '
             '--login-name admin --display-name 管理员'
         ) from error
-    return ServerServices(ContentService(database), IdentityService(database), scope, secrets.token_urlsafe(32), AccountService(database), AccessService(database))
+    return ServerServices(ContentService(database), IdentityService(database), scope, secrets.token_urlsafe(32), AccountService(database), AccessService(database), WorkspaceInvitationService(database))
 
 
 def create_app(config: ServerConfig) -> FastAPI:
