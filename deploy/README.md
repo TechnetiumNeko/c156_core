@@ -14,7 +14,7 @@
 | 部署环境 | 你的服务器填 `test`，朋友服务器填 `prod`；后面两次 Run workflow 都选这个环境 |
 | 网站域名 | 一个确定的域名，例如 `docs.example.cn` |
 | ACR 公网域名 | 从控制台复制，不带 `https://` 或仓库路径 |
-| ACR 用户名和登录密码 | 用于服务器首次 `docker login`；通过私下渠道交付 |
+| ACR 拉取凭据（仅私有仓库） | 公开仓库可匿名拉取时无需交付；私有仓库按需提供拉取凭据 |
 | 服务器登录账号 | 与 GitHub 的 `DEPLOY_USER` 相同，能操作 Docker、项目目录及 Nginx |
 | 联系人 | 遇到 Actions 或 SSH 报错时找谁 |
 
@@ -74,9 +74,11 @@ bash /tmp/c156-deploy/deploy/setup.sh /srv/c156
 
 **失败定位：** [E03 配置、端口或网络](TROUBLESHOOTING.md#e03)；[E02 权限或组件](TROUBLESHOOTING.md#e02)；[E08 Nginx 路径](TROUBLESHOOTING.md#e08)。
 
-## 3. 朋友登录镜像仓库，维护者准备镜像
+## 3. 准备镜像访问，维护者准备发布
 
-**朋友在服务器运行：** 将下面 `YOUR_ACR_REGISTRY` 换成维护者给的 ACR 公网域名。
+**你的 ACR 是公开仓库：** 可以匿名拉取时跳过服务器 docker login，直接通知维护者准备镜像。GitHub Actions 推送仍需要维护者填写 ACR Secrets。
+
+**仅私有仓库或要求登录的仓库：** 朋友在服务器运行，将下面 `YOUR_ACR_REGISTRY` 换成维护者给的 ACR 公网域名。
 
 ```bash
 docker login YOUR_ACR_REGISTRY
@@ -84,7 +86,9 @@ docker login YOUR_ACR_REGISTRY
 
 按提示输入 ACR 用户名和密码。密码不要写进命令。
 
-**正常结果：** `Login Succeeded`。然后告诉维护者：“服务器已准备好，可以准备镜像了。”
+**需要登录时的正常结果：** `Login Succeeded`。然后告诉维护者：“服务器已准备好，可以准备镜像了。”
+
+**运行前确认 SSH 配置完成：** Actions 登录服务器所用钥匙及 KNOWN_HOSTS 见 [SSH 操作步骤](SSH.md)。
 
 **维护者在 GitHub 操作：**
 

@@ -83,17 +83,17 @@ ss -H -ltn 'sport = :28157'
 | --- | --- |
 | `unauthorized`／`denied` | 核对 ACR 控制台域名、用户名、ACR 登录密码；确认命名空间和两个仓库已创建 |
 | 服务器能登录，Actions 仍登录失败 | 维护者检查 Repository 中本次目标的 TEST_ACR_* 或 PROD_ACR_*，核对 Secrets／Variables 类型 |
-| Actions 能推送，服务器拉取 denied | 用 DEPLOY_USER 在服务器重新 `docker login`；不同 Linux 用户不共用登录状态 |
+| Actions 能推送，服务器拉取 denied | 公开仓库先确认两个仓库都公开且地址正确；私有仓库用 DEPLOY_USER 在服务器 docker login，不同用户不共用登录状态 |
 | DNS、连接超时 | 核对实际公网 registry 域名和服务器网络；仅 VPC 可达的地址不能直接给 GitHub runner 使用 |
 | `manifest unknown`／不支持媒体类型 | 维护者查看 push 日志及镜像 digest；保持单平台 amd64、关闭 provenance/SBOM，不手改 release.env |
 
-**修好后：** 登录需显示 `Login Succeeded`。prepare 失败时，由维护者重新准备发布，直到三个 job 变绿，再确认 `/srv/c156/prepared/compose.yaml` 存在。
+**修好后：** 私有仓库登录需显示 `Login Succeeded`；公开仓库匿名拉取时无需登录。prepare 失败时，由维护者重新准备发布，直到三个 job 变绿，再确认 `/srv/c156/prepared/compose.yaml` 存在。
 
 <a id="e05"></a>
 
 ## E05：Actions 的 SSH 或文件传输失败
 
-这部分交给维护者处理，朋友提供 Actions 失败日志即可。
+创建／查看专用部署钥匙和生成 KNOWN_HOSTS，见 [SSH 操作步骤](SSH.md)。这部分交给维护者处理，朋友提供 Actions 失败日志即可。
 
 | 报错 | 维护者检查 |
 | --- | --- |

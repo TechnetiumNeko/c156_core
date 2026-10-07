@@ -43,11 +43,15 @@ TEST_DEPLOY_ENABLED 未设为 true 时，main 自动发布不会推镜像或更�
 
 所有凭据由仓库协作者统一管理，TEST_／PROD_ 是配置分组；当前不使用 Environment 审批或访问隔离。prod 的发布入口仍是手动选择。
 
+创建 SSH 部署钥匙、查看已有文件、填写私钥和 KNOWN_HOSTS，按 [SSH 钥匙操作步骤](SSH.md)执行。
+
 SSH 指纹必须在可信终端核对，不在流水线临时扫描后直接信任。非 22 端口的 known_hosts 用 `[host]:port` 格式。公钥先加入各自服务器对应账号的 authorized_keys。密码、私钥不要放进仓库或服务器 config.env。
 
 **手动发布怎么选：** Actions → Test, build and deploy → Run workflow，分支 main，选 `target_environment=test` 或 `prod`；这个字段只选择部署目标，不要求创建同名 GitHub Environment。首次拉镜像勾选 `prepare_only`；完成对应服务器初始化和面板配置后，再运行同环境且不勾选 prepare_only。两台的 prepared/current、发布序号和回退记录分别保存在各自服务器。
 
 每次运行都会检查、构建和测试本次 main 提交的镜像，通过 artifact 将同一产物交给选定环境推送和部署。prod 手动发布前，核对当前 main 提交已在 test 验证；main 有新提交时，应先验证新版本。镜像包只在该次 workflow 的任务间传递，不包含部署凭据，保留 3 天。
+
+公开 ACR 可以匿名拉取时，服务器无需 docker login，也不用向朋友交付 ACR 推送密码。Actions 推送镜像仍需上述 ACR_USERNAME／ACR_PASSWORD Secrets；这是写权限凭据。
 
 **C. 打包交接文件。** 在包含本次部署代码的本地仓库运行：
 
@@ -55,7 +59,7 @@ SSH 指纹必须在可信终端核对，不在流水线临时扫描后直接信�
 git archive --format=zip --output=c156-deploy.zip HEAD deploy
 ```
 
-交付压缩包及开头的信息表。等朋友完成第 3 步的 Docker 登录后再运行 prepare；完成第 5 步的面板配置后再正式部署。test 首次安装期间避免额外推送 main，因为它会触发 test 的正式部署。main 推送不会发布到 prod。
+交付压缩包及开头的信息表。等朋友完成服务器检查、SSH 公钥配置，以及第 3 步所需的镜像访问准备后再运行 prepare；完成第 5 步的面板配置后再正式部署。test 首次安装期间避免额外推送 main，因为它会触发 test 的正式部署。main 推送不会发布到 prod。
 
 
 ## 技术说明
