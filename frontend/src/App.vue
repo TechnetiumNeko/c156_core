@@ -141,7 +141,7 @@ onUnmounted(() => { window.removeEventListener('beforeunload', beforeUnload); wi
         <p v-if="loadingDocument">正在读取文档…</p>
         <button v-if="accessRefreshFailed && session.user && !editor.paused && editor.document"
           :disabled="busy || loadingAccess || loadingDocument" @click="refreshDocumentAccess">重新读取文档权限（保留草稿）</button>
-        <DocumentEditor :editor="editor" :editable="editable" :status="status" :busy="busy || loadingLatest"
+        <DocumentEditor :editor="editor" :editable="editable" :status="status" :busy="busy || loadingLatest || loadingAccess"
           @edit="editor.edit($event)" @save="save" @latest="latest" @merge="merge" />
       </article>
     </div>
