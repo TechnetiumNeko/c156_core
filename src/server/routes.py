@@ -1,0 +1,54 @@
+"""Authentication routes directly adapt existing application services."""
+from fastapi import APIRouter, Depends, Request, Response
+from .auth import parse_identity, require_login_nonce, require_session_csrf, set_session_cookie
+from .schemas import LoginBody, EmptyBody, validate_body
+from .serialization import session_json, node_json, content_access_json
+from .transport import read_json_object, read_query
+
+router = APIRouter()
+
+async def login_body(request: Request):
+    read_query(request)
+    return validate_body(LoginBody, await read_json_object(request))
+
+async def empty_body(request: Request):
+    read_query(request)
+    return validate_body(EmptyBody, await read_json_object(request))
+
+@router.get('/api/bootstrap')
+def bootstrap(request: Request):
+    read_query(request)
+    identity = parse_identity(request)
+    services = request.app.state.services
+    view = services.content.bootstrap(session_token=identity.session_token)
+    if view.session is None:
+        return {'initialized': view.initialized, 'nonce': services.nonce}
+    root = view.root
+    return {'initialized': view.initialized, **session_json(view.session),
+            'workspace_access_version': view.workspace_access_version, 'workspace_role': view.workspace_role,
+            'root': node_json(root.node) if root else None,
+            'root_access': content_access_json(root.access) if root else None}
+
+@router.get('/api/session')
+def session(request: Request):
+    read_query(request)
+    identity = parse_identity(request)
+    return session_json(request.app.state.services.identity.current_session(session_token=identity.session_token))
+
+@router.post('/api/auth/login')
+def login(request: Request, response: Response, body: LoginBody = Depends(login_body)):
+    services = request.app.state.services
+    require_login_nonce(request, services)
+    identity = parse_identity(request)
+    grant = services.identity.login(body.login_name, body.password, source=identity.source)
+    set_session_cookie(response, grant, secure=request.app.state.config.cookie_secure)
+    return session_json(grant)
+
+@router.post('/api/auth/logout')
+def logout(request: Request, response: Response, body: EmptyBody = Depends(empty_body)):
+    services = request.app.state.services
+    identity = parse_identity(request)
+    require_session_csrf(request, services, identity)
+    services.identity.logout(session_token=identity.session_token)
+    response.delete_cookie('c156_session', path='/', httponly=True, samesite='strict', secure=request.app.state.config.cookie_secure)
+    return {'ok': True}
