@@ -24,7 +24,17 @@ fi
 (( sequence >= watermark )) || abort 'stale deployment rejected'
 cd "$root"
 [[ -z $(git status --porcelain --untracked-files=no) ]] || abort 'tracked files have local changes; commit or resolve them before deployment'
-git fetch origin main < /dev/null
+# Each network attempt is bounded, and never reads the streamed SSH script.
+command -v timeout >/dev/null || abort 'missing command: timeout'
+for attempt in 1 2 3; do
+  printf 'Fetching origin/main (attempt %s/3, timeout 90s)\n' "$attempt"
+  if GIT_TERMINAL_PROMPT=0 timeout --kill-after=5s 90s git fetch origin main < /dev/null; then
+    break
+  fi
+  (( attempt < 3 )) || abort 'git fetch failed after 3 attempts; check GitHub connectivity (E05)'
+  printf 'Fetch failed; retrying in 5s\n' >&2
+  sleep 5
+done
 # Deploy exactly the tested commit, never the moving tip of main.
 git merge-base --is-ancestor "$candidate_sha" FETCH_HEAD || abort 'deployment commit is not on origin/main'
 git checkout --detach "$candidate_sha" < /dev/null
@@ -48,14 +58,6 @@ fi
 backup="before-${sequence}-$(date -u +%Y%m%dT%H%M%S)-$$.sqlite"
 compose_for "$root" run --rm --interactive=false -T --no-deps backend python -m src.storage backup --database /data/c156.sqlite --output "/backups/$backup" < /dev/null
 compose_for "$root" up -d --wait --wait-timeout 90 < /dev/null
-probe() {
-  local base=$1 path=$2 expected=$3 body
-  body=$(curl --fail --silent --show-error --connect-timeout 5 --max-time 10 -H "Host: $SITE_DOMAIN" "$base$path") || return 1
-  body=$(printf '%s' "$body" | tr -d '[:space:]')
-  [[ $body == "$expected" ]]
-}
-probe "http://127.0.0.1:$APP_PORT" /build-info.json "{\"build_sha\":\"$candidate_sha\"}" || fail 'local frontend/version check failed'
-probe "http://127.0.0.1:$APP_PORT" /api/healthz "{\"status\":\"ok\",\"build_sha\":\"$candidate_sha\"}" || fail 'local API check failed'
 if [[ $NGINX_MANAGED == 1 ]]; then
   sed "s/@APP_PORT@/$APP_PORT/g" "$root/deploy/nginx-proxy.inc.template" > "$root/nginx/proxy.inc.new.$$"
   chmod 644 "$root/nginx/proxy.inc.new.$$"
@@ -63,8 +65,7 @@ if [[ $NGINX_MANAGED == 1 ]]; then
   "$NGINX_BIN" -t
   "$NGINX_BIN" -s reload
 fi
-probe "https://$SITE_DOMAIN" /build-info.json "{\"build_sha\":\"$candidate_sha\"}" || fail 'public HTTPS frontend/version check failed'
-probe "https://$SITE_DOMAIN" /api/healthz "{\"status\":\"ok\",\"build_sha\":\"$candidate_sha\"}" || fail 'public HTTPS API check failed'
+poll_deployment_health "$candidate_sha" "http://127.0.0.1:$APP_PORT" "https://$SITE_DOMAIN" || fail 'health polling timed out; check E09/E10/E12 before publishing again'
 printf '%s\n' "$sequence" > "$root/.deploy-sequence.new.$$"
 mv -f "$root/.deploy-sequence.new.$$" "$root/.deploy-sequence"
 printf 'Deployed %s; backup %s/backups/%s\n' "$candidate_sha" "$root" "$backup"
