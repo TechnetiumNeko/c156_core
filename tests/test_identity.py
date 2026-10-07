@@ -51,14 +51,14 @@ class IdentityTests(TempPathTestCase):
 
     def test_password_and_login_contracts(self):
         self.assertEqual(normalize_login_name('Alice_123'), 'alice_123')
-        for size in (15, 128):
+        for size in (8, 128):
             password = ' ' + '密' * (size-2) + ' '
             self.assertEqual(validate_password(password), password)
             encoded = self.hasher.hash(password)
             self.assertTrue(encoded.startswith('$argon2id$v=19$m=19456,t=2,p=1$'))
             self.assertTrue(self.hasher.verify(encoded, password))
             self.assertFalse(self.hasher.verify(encoded, password.strip()))
-        for size in (14, 129):
+        for size in (7, 129):
             with self.assertRaises(InvalidArgument):
                 validate_password('a'*size)
         for name in ('ab','1alice','älïce','a'*33):

@@ -146,7 +146,7 @@ ss -H -ltn 'sport = :28157'
 | --- | --- |
 | `images.env missing` | 返回手册第 3 步，先成功运行 prepare |
 | `database already exists; refusing initialization` | 已有库，不能再次 --init-db；不要删除。确认是否只是管理员创建中断 |
-| 两次密码不一致／密码不足 15 字符或超过 128 字符 | 库可能已创建，按下面命令单独重试管理员引导 |
+| 两次密码不一致／密码不足 8 字符或超过 128 字符 | 库可能已创建，按下面命令单独重试管理员引导 |
 | `bootstrap requires an empty unowned library` | 库中已有账号或 owner；停止引导，使用已有账号，必要时让维护者处理账号恢复 |
 | 数据库版本或 schema 错误 | 先备份现有数据，让维护者核对版本；不靠 init 自动升级 |
 
@@ -156,7 +156,7 @@ ss -H -ltn 'sport = :28157'
 bash -c 'source "$HOME/c156/deploy/common.sh"; load_config "$HOME/c156"; compose_for "$HOME/c156" run --rm --no-deps backend python -m src.identity bootstrap-admin --database /data/c156.sqlite --login-name admin --display-name 管理员'
 ```
 
-输入两次 15～128 字符的网站密码，命令成功结束后继续手册第 5 步。引导会拒绝改写已有账号。
+输入两次 8～128 字符的网站密码，命令成功结束后继续手册第 5 步。引导会拒绝改写已有账号。
 
 如果已经导入旧库，不要运行新库引导，联系维护者确认已有账号和数据是否可用。
 

@@ -166,7 +166,7 @@ onUnmounted(() => { window.removeEventListener('beforeunload', beforeUnload); wi
       </aside>
       <aside v-else-if="!session.blocked" class="login-surface"><LoginPanel :client="client" :busy="busy" :ready="ready && !session.recoveryNeeded && session.initialized" @login="login" @failure="failure($event, session.epoch)" /></aside>
       <article class="editor-area" :class="{'anonymous-empty': !session.user && !editor.document}">
-        <NAlert v-if="files.message.value" type="info" class="mb-3" role="status">{{files.message.value}}</NAlert>
+        <NAlert v-if="files.message.value" :type="files.messageType.value" class="mb-3" :role="files.messageType.value === 'error' ? 'alert' : 'status'">{{files.message.value}}</NAlert>
         <p v-if="loadingDocument" class="muted-copy" role="status">正在读取文档…</p>
         <NButton v-if="accessRefreshFailed && session.user && !editor.paused && editor.document" :disabled="navigationBusy" class="mb-3" @click="refreshDocumentAccess">重新读取文档权限（保留草稿）</NButton>
         <DocumentEditor :editor="editor" :editable="editable" :status="status" :busy="busy || loadingLatest || loadingAccess" @edit="editor.edit($event)" @save="save" @latest="latest" @merge="merge" />
@@ -177,6 +177,6 @@ onUnmounted(() => { window.removeEventListener('beforeunload', beforeUnload); wi
       <AdminUsersPage v-if="page === 'admin' && session.user.site_admin" :key="session.epoch" :client="client" :user="session.user" @profile="session.user = $event" @failure="failure($event, session.epoch)" />
       <MembersPage v-if="page === 'members' && managesWorkspace" :key="session.epoch" :client="client" :user="session.user" @refresh="bootstrap" @failure="failure($event, session.epoch)" />
     </template>
-    <FileActions :show="files.visible.value" :name="files.name.value" :action="files.action.value" :busy="fileBusy || !!editor.saving" @update:name="files.name.value = $event" @close="files.close" @submit="files.submit" />
+    <FileActions :show="files.visible.value" :name="files.name.value" :action="files.action.value" :busy="fileBusy || !!editor.saving" :private-document="files.privateDocument.value" :can-create-private="['editor', 'admin', 'owner'].includes(session.workspaceRole ?? '')" :error="files.error.value" @update:private-document="files.privateDocument.value = $event" @update:name="files.name.value = $event" @close="files.close" @submit="files.submit" />
   </div>
 </template>

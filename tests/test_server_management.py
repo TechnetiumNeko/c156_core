@@ -72,9 +72,10 @@ class ManagementAPITest(ServerFixture):
         folder = await self.write('POST', '/api/folder', {'parent_id': self.root, 'name': '文件夹'})
         self.assertEqual(folder.status_code, 201, folder.text)
         node = folder.json()['node']
-        result = await self.write('POST', '/api/document', {'parent_id': node['id'], 'name': '文档', 'content': '# 原文'})
+        result = await self.write('POST', '/api/document', {'parent_id': node['id'], 'name': '文档', 'content': '# 原文', 'visibility': 'private'})
         self.assertEqual(result.status_code, 201, result.text)
         doc = result.json()['document']
+        self.assertEqual(result.json()['access']['visibility'], 'private')
         rename = await self.write('PUT', '/api/node/rename', {'object_id': doc['id'], 'name': '新名称', 'expected_version': doc['version']})
         self.assertEqual(rename.status_code, 200, rename.text)
         reread = (await self.client.get('/api/document', params={'object_id': doc['id']})).json()['document']

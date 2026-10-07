@@ -147,7 +147,7 @@ test -s "$HOME/c156/images.env" && echo 'Images ready'
 bash "$HOME/c156/deploy/setup.sh" "$HOME/c156" --init-db
 ```
 
-提前准备 **15～128 个字符**的网站管理员密码。看到 `Password:` 后输入密码；看到 `Confirm password:` 再输一次。输入时屏幕不显示字符，这是正常的。网站账号固定为 **admin**，密码是这里设置的，与 ACR 密码无关。
+提前准备 **8～128 个字符**的网站管理员密码。看到 `Password:` 后输入密码；看到 `Confirm password:` 再输一次。输入时屏幕不显示字符，这是正常的。网站账号固定为 **admin**，密码是这里设置的，与 ACR 密码无关。
 
 **正常结果：** 命令成功结束，最后包含 `Directories ready`。之后不要再运行 `--init-db`。
 
