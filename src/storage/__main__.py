@@ -17,12 +17,14 @@ from __future__ import annotations
 import argparse
 import sys
 import shlex
+import sqlite3
 from pathlib import Path
 
 from ..core.errors import ContentError
 from .errors import StorageError
 from .legacy import migrate_legacy
 from .management import initialize_database
+from .backup import backup_database
 
 __all__ = ["build_parser", "main"]
 
@@ -46,6 +48,9 @@ def build_parser() -> argparse.ArgumentParser:
     migrate_parser.add_argument(
         "--database", required=True, help="target database path"
     )
+    backup_parser = subparsers.add_parser('backup', help='create a verified online SQLite snapshot')
+    backup_parser.add_argument('--database', required=True)
+    backup_parser.add_argument('--output', required=True)
     return parser
 
 
@@ -57,9 +62,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "init":
             initialize_database(Path(args.database))
+        elif args.command == 'backup':
+            backup_database(Path(args.database), Path(args.output))
         else:
             migrate_legacy(Path(args.source), Path(args.database))
-    except (ContentError, StorageError, OSError) as exc:
+    except (ContentError, StorageError, OSError, ValueError, sqlite3.Error) as exc:
         message = getattr(exc, "message", None) or str(exc)
         print(f"error: {message}", file=sys.stderr)
         rerun_command = getattr(exc, "details", {}).get("rerun_command")
