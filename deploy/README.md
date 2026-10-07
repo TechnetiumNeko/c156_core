@@ -40,7 +40,18 @@ command -v git curl flock tar ss
 
 **正常结果：** 仓库克隆成功，显示 deploy/setup.sh 路径；随后有 `Docker OK`、Compose 和 Nginx 版本；最后显示五个命令的路径。
 
-如果 ~/c156 已经存在，不要删除或覆盖，按 [E01](TROUBLESHOOTING.md#e01) 确认是否已克隆。公开仓库用 HTTPS 克隆，无需另配 GitHub Deploy Key。
+**你已经 clone 过旧版本：** 不要重复 clone，先确认本次简化 PR 已合并 main，再运行下面这段取得新版 setup。看到成功更新后继续第 2 步；源码有修改或无法快进时按 [E01](TROUBLESHOOTING.md#e01) 处理。
+
+```bash
+cd "$HOME/c156"
+if git diff --quiet && git diff --cached --quiet; then
+  git fetch origin main && git merge --ff-only origin/main
+else
+  echo '源码有本地修改，先交给维护者处理；不要强制覆盖。'
+fi
+```
+
+如果目录含其他项目或现有数据，不要删除或覆盖，按 [E01](TROUBLESHOOTING.md#e01) 确认。公开仓库用 HTTPS 克隆，无需另配 GitHub Deploy Key。
 
 如果 `nginx -v` 找不到命令，但面板的 Nginx 正常运行，记录面板 Nginx 的实际路径，下一步填 `NGINX_BIN`。其他命令缺失或权限报错，先解决再继续。
 

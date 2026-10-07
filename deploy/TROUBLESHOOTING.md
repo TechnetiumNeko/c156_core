@@ -28,7 +28,7 @@
 | --- | --- |
 | git: command not found | 让服务器管理员安装 Git，再克隆 |
 | GitHub 连接超时 | 确认服务器能访问 GitHub，恢复网络后重试；后续自动更新也需要服务器能够访问 GitHub |
-| destination path already exists | 如果目录内已有 .git 和 deploy/setup.sh，直接使用；若含现有数据或其他项目，不删除，交给维护者确认目录 |
+| destination path already exists | 如果目录内已有 .git 和 deploy/setup.sh，不重复 clone；首次安装前按手册第 1 步安全更新 main。若含其他项目，不删除，交给维护者确认目录 |
 | 已克隆但没有 deploy/setup.sh | 确认上游 main 已合并部署代码，克隆了正确仓库；不要只下载一个脚本 |
 
 **修好后：** `ls "$HOME/c156/deploy/setup.sh"` 显示文件，回手册第 1 步。

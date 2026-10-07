@@ -24,10 +24,10 @@ fi
 (( sequence >= watermark )) || abort 'stale deployment rejected'
 cd "$root"
 [[ -z $(git status --porcelain --untracked-files=no) ]] || abort 'tracked files have local changes; commit or resolve them before deployment'
-git fetch origin main
+git fetch origin main < /dev/null
 # Deploy exactly the tested commit, never the moving tip of main.
 git merge-base --is-ancestor "$candidate_sha" FETCH_HEAD || abort 'deployment commit is not on origin/main'
-git checkout --detach "$candidate_sha"
+git checkout --detach "$candidate_sha" < /dev/null
 # shellcheck source=common.sh
 source "$root/deploy/common.sh"
 load_config "$root"
@@ -38,16 +38,16 @@ for directory in data assets backups nginx; do
 done
 printf 'BUILD_SHA=%s\nBACKEND_IMAGE=%s\nFRONTEND_IMAGE=%s\nDEPLOY_SEQUENCE=%s\n' "$candidate_sha" "$backend" "$frontend" "$sequence" > "$root/images.env.new.$$"
 mv -f "$root/images.env.new.$$" "$root/images.env"
-compose_for "$root" config --quiet
-compose_for "$root" pull
+compose_for "$root" config --quiet < /dev/null
+compose_for "$root" pull < /dev/null
 if [[ $action == --prepare ]]; then
   printf 'Images prepared. For a new library run: bash deploy/setup.sh %s --init-db\n' "$root"
   exit 0
 fi
 [[ -f $root/data/c156.sqlite ]] || fail 'database missing: explicit initialization required'
 backup="before-${sequence}-$(date -u +%Y%m%dT%H%M%S)-$$.sqlite"
-compose_for "$root" run --rm -T --no-deps backend python -m src.storage backup --database /data/c156.sqlite --output "/backups/$backup"
-compose_for "$root" up -d --wait --wait-timeout 90
+compose_for "$root" run --rm --interactive=false -T --no-deps backend python -m src.storage backup --database /data/c156.sqlite --output "/backups/$backup" < /dev/null
+compose_for "$root" up -d --wait --wait-timeout 90 < /dev/null
 probe() {
   local base=$1 path=$2 expected=$3 body
   body=$(curl --fail --silent --show-error --connect-timeout 5 --max-time 10 -H "Host: $SITE_DOMAIN" "$base$path") || return 1

@@ -49,13 +49,24 @@ if [ ! -f config.env ]; then
 fi
 ```
 
+**你已经 clone 过，不需要重复 clone：** 先确认本次简化 PR 已合并 main，执行下面的一次性更新，再复制配置和运行 setup。尚未运行 setup 的旧 clone 必须先更新，否则用到的仍是旧 UID/GID 规则。
+
+```bash
+cd "$HOME/c156"
+if git diff --quiet && git diff --cached --quiet; then
+  git fetch origin main && git merge --ff-only origin/main
+else
+  echo '源码有本地修改，先交给维护者处理；不要强制覆盖。'
+fi
+```
+
 打开项目根目录的 config.env，填写你的测试域名：
 
 ```dotenv
 SITE_DOMAIN=你的真实测试域名
 ```
 
-DEPLOY_ROOT 保持留空即可；setup 会自动写入实际目录，**无需手动改路径**。SITE_DOMAIN 只填域名，不带协议或路径。Nginx binary 不在 PATH 时按面板实际路径填 NGINX_BIN。
+DEPLOY_ROOT 保持留空即可；setup 会自动写入实际目录，**无需手动改路径**。SITE_DOMAIN 只填域名，不带协议或路径。若已复制旧配置，把 APP_UID 和 APP_GID 两项清空，新 setup 会记录 deploy 用户的实际身份。Nginx binary 不在 PATH 时按面板实际路径填 NGINX_BIN。
 
 保存 config.env 后运行 `bash "$HOME/c156/deploy/setup.sh"`，看到 `Directories ready` 再继续。权限错误交给服务器管理员处理，不给 data 目录 chmod 777。
 
