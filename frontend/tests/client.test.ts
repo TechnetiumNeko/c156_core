@@ -4,10 +4,63 @@ import { ApiClient, ApiError } from '../src/api/client.ts';
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status });
 const grant = { user: { id: 'alice', login_name: 'alice', display_name: 'Alice', status: 'active', site_admin: false, version: 1 }, csrf: 'csrf', expires_at: 'date' };
 test('public login request uses same origin and nonce; malformed content is rejected', async () => {
- const calls: [string, RequestInit | undefined][] = []; const client = new ApiClient(async (url, init) => { calls.push([String(url), init]); return calls.length === 1 ? json({ initialized: true, nonce: 'nonce' }) : json(grant); });
- await client.bootstrap(); await client.login('alice', 'password'); assert.equal(calls[1][0], '/api/auth/login'); assert.equal(calls[1][1]?.credentials, 'same-origin'); assert.equal(new Headers(calls[1][1]?.headers).get('X-C156-Nonce'), 'nonce'); assert.deepEqual(JSON.parse(String(calls[1][1]?.body)), { login_name: 'alice', password: 'password' });
- const malformed = new ApiClient(async () => json({ document: {} })); await assert.rejects(malformed.readDocument('x'), (error: ApiError) => error.code === 'response');
+    const calls: [
+        string,
+        RequestInit | undefined
+    ][] = [];
+    const client = new ApiClient(async (url, init) => {
+        calls.push([String(url), init]);
+        return calls.length === 1 ? json({ initialized: true, nonce: 'nonce' }) : json(grant);
+    });
+    await client.bootstrap();
+    await client.login('alice', 'password');
+    assert.equal(calls[1][0], '/api/auth/login');
+    assert.equal(calls[1][1]?.credentials, 'same-origin');
+    assert.equal(new Headers(calls[1][1]?.headers).get('X-C156-Nonce'), 'nonce');
+    assert.deepEqual(JSON.parse(String(calls[1][1]?.body)), { login_name: 'alice', password: 'password' });
+    const malformed = new ApiClient(async () => json({ document: {} }));
+    await assert.rejects(malformed.readDocument('x'), (error: ApiError) => error.code === 'response');
 });
-test('save and logout send csrf, exact bodies and public paths', async () => { const calls: [string, RequestInit | undefined][] = []; const client = new ApiClient(async (url, init) => { calls.push([String(url), init]); return json({ ok: true }); }); client.csrf = 'proof'; const body = { object_id: 'doc', content: 'text\n\n', expected_revision_id: 'r1' }; await assert.rejects(client.saveDocument({ ...body, epoch: 9 } as typeof body)); assert.equal(calls[0][0], '/api/document'); assert.equal(calls[0][1]?.method, 'PUT'); assert.deepEqual(JSON.parse(String(calls[0][1]?.body)), body); assert.equal(new Headers(calls[0][1]?.headers).get('X-C156-CSRF'), 'proof'); await client.logout(); assert.equal(calls[1][0], '/api/auth/logout'); assert.equal(client.csrf, null); });
-test('late successful bootstrap and late 401 cannot alter new proofs', async () => { for (const status of [200, 401]) { let resolve!: (value: Response) => void; const client = new ApiClient(() => new Promise(r => { resolve = r; })); const pending = client.bootstrap(); client.invalidate(); client.csrf = 'new'; resolve(json(status === 200 ? { initialized: true, nonce: 'old' } : { error: { code: 'unauthenticated', message: 'Expired' } }, status)); await assert.rejects(pending, (error: ApiError) => error.code === 'stale'); assert.equal(client.csrf, 'new'); assert.equal(client.nonce, null); } });
-test('domain conflict and transport failure remain distinguishable', async () => { const conflict = new ApiClient(async () => json({ error: { code: 'conflict', message: 'Changed' } }, 409)); await assert.rejects(conflict.readDocument('doc'), (error: ApiError) => error.code === 'conflict' && error.status === 409); const network = new ApiClient(async () => { throw Error('offline'); }); await assert.rejects(network.bootstrap(), (error: ApiError) => error.code === 'network'); });
+test('save and logout send csrf, exact bodies and public paths', async () => {
+    const calls: [
+        string,
+        RequestInit | undefined
+    ][] = [];
+    const client = new ApiClient(async (url, init) => {
+        calls.push([String(url), init]);
+        return json({ ok: true });
+    });
+    client.csrf = 'proof';
+    const body = { object_id: 'doc', content: 'text\n\n', expected_revision_id: 'r1' };
+    await assert.rejects(client.saveDocument({ ...body, epoch: 9 } as typeof body));
+    assert.equal(calls[0][0], '/api/document');
+    assert.equal(calls[0][1]?.method, 'PUT');
+    assert.deepEqual(JSON.parse(String(calls[0][1]?.body)), body);
+    assert.equal(new Headers(calls[0][1]?.headers).get('X-C156-CSRF'), 'proof');
+    await client.logout();
+    assert.equal(calls[1][0], '/api/auth/logout');
+    assert.equal(client.csrf, null);
+});
+test('late successful bootstrap and late 401 cannot alter new proofs', async () => {
+    for (const status of [200, 401]) {
+        let resolve!: (value: Response) => void;
+        const client = new ApiClient(() => new Promise(r => {
+            resolve = r;
+        }));
+        const pending = client.bootstrap();
+        client.invalidate();
+        client.csrf = 'new';
+        resolve(json(status === 200 ? { initialized: true, nonce: 'old' } : { error: { code: 'unauthenticated', message: 'Expired' } }, status));
+        await assert.rejects(pending, (error: ApiError) => error.code === 'stale');
+        assert.equal(client.csrf, 'new');
+        assert.equal(client.nonce, null);
+    }
+});
+test('domain conflict and transport failure remain distinguishable', async () => {
+    const conflict = new ApiClient(async () => json({ error: { code: 'conflict', message: 'Changed' } }, 409));
+    await assert.rejects(conflict.readDocument('doc'), (error: ApiError) => error.code === 'conflict' && error.status === 409);
+    const network = new ApiClient(async () => {
+        throw Error('offline');
+    });
+    await assert.rejects(network.bootstrap(), (error: ApiError) => error.code === 'network');
+});
