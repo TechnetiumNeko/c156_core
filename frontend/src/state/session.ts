@@ -3,6 +3,7 @@ import type { Bootstrap, Node, Access, User } from '../api/types.ts';
 import { EditorState } from './editor.ts';
 export class SessionState {
     user: User | null = null;
+    workspaceRole: string | null = null;
     root: Node | null = null;
     rootAccess: Access | null = null;
     initialized = false;
@@ -18,6 +19,7 @@ export class SessionState {
     }
     private reset() {
         this.user = null;
+        this.workspaceRole = null;
         this.root = null;
         this.rootAccess = null;
         this.pending = null;
@@ -38,6 +40,7 @@ export class SessionState {
             return false;
         }
         this.user = value.user;
+        this.workspaceRole = value.workspace_role;
         this.root = value.root;
         this.rootAccess = value.root_access;
         this.blocked = false;

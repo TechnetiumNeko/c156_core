@@ -32,3 +32,14 @@ def session_json(session):
 def content_access_json(access):
     return {'version': access.version, 'actions': list(access.actions), 'visibility': access.visibility,
             'frozen': access.frozen, 'can_freeze': access.can_freeze, 'can_unfreeze': access.can_unfreeze}
+
+
+def account_grant_json(grant):
+    return {'user': user_json(grant.user), 'token': grant.token,
+            'purpose': grant.purpose, 'expires_at': grant.expires_at}
+
+
+def workspace_access_json(access):
+    return {'version': access.version, 'read_scope': access.read_scope,
+            'members': [{'user': user_json(member.user), 'role': member.role,
+                         'status': member.status} for member in access.members]}
