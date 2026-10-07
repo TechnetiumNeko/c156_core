@@ -177,8 +177,12 @@
 
 ## 执行证据（2026-10-07）
 
-Task 1–5 实现及修复已完成并通过独立审阅，提交范围 cc1e8a7..4866fd5；各任务命令、结果和修复见 `.superpowers/sdd/2026-10-07-vue-fastapi-minimal-loop/task-{1..5}-report.md`。
+Task 1–5 实现及修复已完成并通过独立审阅，提交范围 cc1e8a7..4866fd5。临时 SDD 交接记录不作为仓库文档，下面保留实际验证摘要。
 
-Task 6 的实际证据见 `task-6-report.md`：Python 全回归477项通过；旧 Node检查含真实jsdom净化通过；新前端四测试文件通过。typecheck/build复用4866fd5的成功证据（产品代码未变化）。真实Uvicorn8001与Vite5173完成一次性HTTP代理登录、目录、读取、保存、再次读取和退出，非法Origin403。独立临时库及启动进程已清理。
+Task 6：`.venv/bin/python -m unittest discover -s tests -v` 全回归477项通过，35.580秒；`node --experimental-default-type=module --test tests/web/*.test.mjs` 通过，真实jsdom净化未跳过；`npm --prefix frontend run test` 四个测试文件通过。真实Uvicorn8001与Vite5173完成一次性HTTP代理登录、目录、读取、保存、再次读取和退出，非法Origin403，退出后会话401。独立临时库及启动进程已清理。
+
+全分支审阅发现并在 d04b670 修复三项前端问题：允许合法的 workspace_role:null；编辑能力以服务返回的 actions 为准，冻结者本人不被重复否决；认证转换中的 bootstrap 失败提供明确恢复状态和保留草稿的会话重载入口。修复后的 `npm --prefix frontend run test`、`npm --prefix frontend run typecheck`、`npm --prefix frontend run build` 均通过；Vite构建24模块，393毫秒。后端未变化，未重复Python全回归或已通过的HTTP代理检查。独立复审确认三项均已解决，没有剩余重要问题。最终文档检查使用 `git diff --check`。
+
+实施前补清两项常规决策：CLI 默认Host/Origin随实际后端端口生成，避免自定义端口被误拒绝；登录/恢复重新bootstrap目录根与nonce，避免旧身份信息残留。如果未来需要不同策略，分别调整启动配置和会话恢复代码，不影响存储边界。
 
 截图条件已尝试：Chrome仅打开登录页，但20秒超时且无图片，截图视觉检查未验证。该可选步骤已以明确限制结束；没有执行浏览器点击、填表、完整交互或公网部署。
