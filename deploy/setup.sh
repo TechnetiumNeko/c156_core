@@ -12,6 +12,10 @@ fi
 load_config "$root"
 [[ $SITE_DOMAIN != docs.example.com ]] || fail 'set your real SITE_DOMAIN first'
 check_environment
+if [[ ! -L $root/current ]]; then
+  command -v ss >/dev/null || fail 'ss is needed for the first-install port check'
+  [[ -z $(ss -H -ltn "sport = :$APP_PORT") ]] || fail "port $APP_PORT is occupied; choose another APP_PORT"
+fi
 mkdir -p "$root"/{data,assets,backups,releases,nginx}
 chmod 700 "$root/data" "$root/assets" "$root/backups"
 chown "$APP_UID:$APP_GID" "$root/data" "$root/assets" "$root/backups"

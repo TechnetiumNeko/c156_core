@@ -40,6 +40,12 @@ fi
 backup="before-${candidate_sequence}-$(date -u +%Y%m%dT%H%M%S)-$$.sqlite"
 # Candidate image must be able to snapshot the existing schema before it starts.
 compose_for "$release" run --rm -T --no-deps backend python -m src.storage backup --database /data/c156.sqlite --output "/backups/$backup"
+probe() {
+  local base=$1 path=$2 expected=$3 body
+  body=$(curl --fail --silent --show-error --connect-timeout 5 --max-time 10 -H "Host: $SITE_DOMAIN" "$base$path") || return 1
+  body=$(printf '%s' "$body" | tr -d '[:space:]')
+  [[ $body == "$expected" ]]
+}
 proxy=$DEPLOY_ROOT/nginx/proxy.inc
 proxy_saved=$DEPLOY_ROOT/nginx/.proxy.before.$$
 proxy_existed=0; switched=0; success=0
@@ -55,6 +61,9 @@ restore_on_exit() {
     fi
     if [[ -n $old && -d $old ]]; then
       compose_for "$old" up -d --wait --wait-timeout 90 || recovery_failed=1
+      load_release "$old"
+      probe "http://127.0.0.1:$APP_PORT" /api/healthz "{\"status\":\"ok\",\"build_sha\":\"$BUILD_SHA\"}" || recovery_failed=1
+      probe "https://$SITE_DOMAIN" /build-info.json "{\"build_sha\":\"$BUILD_SHA\"}" || recovery_failed=1
     else
       printf 'First deployment has no successful release to restore; inspect containers.\n' >&2
     fi
@@ -66,12 +75,7 @@ restore_on_exit() {
 trap restore_on_exit EXIT
 switched=1
 compose_for "$release" up -d --wait --wait-timeout 90
-probe() {
-  local base=$1 path=$2 expected=$3 body
-  body=$(curl --fail --silent --show-error --connect-timeout 5 --max-time 10 -H "Host: $SITE_DOMAIN" "$base$path") || return 1
-  body=$(printf '%s' "$body" | tr -d '[:space:]')
-  [[ $body == "$expected" ]]
-}
+
 for attempt in {1..12}; do
   if probe "http://127.0.0.1:$APP_PORT" /build-info.json "{\"build_sha\":\"$candidate_sha\"}" &&
      probe "http://127.0.0.1:$APP_PORT" /api/healthz "{\"status\":\"ok\",\"build_sha\":\"$candidate_sha\"}"; then break; fi

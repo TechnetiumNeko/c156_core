@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      prepare_only:
+        description: 'First install: only deliver and pull images; initialize library and panel before live deployment'
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -93,6 +98,7 @@ jobs:
           KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
           SHA: ${{ github.sha }}
           SEQUENCE: ${{ github.run_number }}
+          PREPARE_ONLY: ${{ inputs.prepare_only }}
         run: |
           set -euo pipefail
           [[ "$DEPLOY_HOST" =~ ^[a-zA-Z0-9.-]+$ && "$DEPLOY_USER" =~ ^[a-zA-Z0-9_-]+$ ]]
@@ -106,5 +112,7 @@ jobs:
           destination="$DEPLOY_ROOT/releases/$SEQUENCE-$SHA"
           ssh "${ssh_options[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p '$destination'"
           rsync -az -e "ssh -i $HOME/.ssh/id_c156 -p $DEPLOY_PORT -o StrictHostKeyChecking=yes -o BatchMode=yes" "$RUNNER_TEMP/release/" "$DEPLOY_USER@$DEPLOY_HOST:$destination/"
-          ssh "${ssh_options[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "bash '$destination/deploy.sh' '$DEPLOY_ROOT' '$destination'"
+          deploy_args=
+          [[ "$PREPARE_ONLY" != true ]] || deploy_args=--prepare
+          ssh "${ssh_options[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "bash '$destination/deploy.sh' '$DEPLOY_ROOT' '$destination' $deploy_args"
           rm -f "$HOME/.ssh/id_c156"
