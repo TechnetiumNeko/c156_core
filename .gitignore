@@ -48,3 +48,7 @@ Thumbs.db
 
 # Isolated feature workspaces
 /.worktrees/
+
+# Frontend dependencies and compiler caches
+node_modules/
+*.tsbuildinfo
