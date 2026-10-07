@@ -1,2 +1,4 @@
-// The Vue document page is added in Task 5.
-export {};
+import { createApp } from 'vue';
+import App from './App.vue';
+import './styles.css';
+createApp(App).mount('#app');
