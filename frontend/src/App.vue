@@ -15,8 +15,10 @@ const directory = reactive(new DirectoryState(client)) as DirectoryState;
 const busy = ref(false); const loadingDocument = ref(false); const loadingLatest = ref(false);
 const message = ref(''); const ready = ref(false); const access = ref<Access | null>(null);
 const blockedSave = ref(false);
+const accessRefreshFailed = ref(false); const loadingAccess = ref(false);
+let accessRequest = 0;
 const editable = computed(() => !!access.value?.actions.includes('edit') && !access.value.frozen);
-const status = computed(() => editor.paused ? '会话已暂停' : editor.saving ? '保存中，可继续输入' : editor.uncertainSave ? '保存结果未确认，草稿已保留' : blockedSave.value ? '保存受阻，草稿已保留' : editor.conflict ? '修订冲突，草稿已保留' : !editable.value ? '只读' : editor.dirty ? '未保存' : editor.comparisonDraft !== null ? '合并参考仍保留，请修改并保存' : '已保存');
+const status = computed(() => editor.paused ? '会话已暂停' : editor.saving ? '保存中，可继续输入' : editor.uncertainSave ? '保存结果未确认，草稿已保留' : blockedSave.value ? '保存受阻，草稿已保留' : editor.conflict ? '修订冲突，草稿已保留' : loadingAccess.value ? '正在确认文档权限' : accessRefreshFailed.value ? '文档权限读取失败，草稿已保留' : !editable.value ? '只读' : editor.dirty ? '未保存' : editor.comparisonDraft !== null ? '合并参考仍保留，请修改并保存' : '已保存');
 function syncDirectory() { directory.setRoot(session.root, session.user?.id ?? null); }
 async function failure(error: unknown, epoch: number) {
   if (epoch !== session.epoch || (error instanceof ApiError && error.code === 'stale')) return;
@@ -37,11 +39,18 @@ async function bootstrap() {
   finally { busy.value = false; }
 }
 async function refreshDocumentAccess() {
-  access.value = null;
-  if (!session.user || editor.paused || !editor.document) return;
-  const epoch = session.epoch; const id = editor.document.id;
-  try { const value = await client.readDocument(id); if (epoch === session.epoch && editor.document?.id === id && !editor.paused) access.value = value.access; }
-  catch (error) { await failure(error, epoch); }
+  if (loadingAccess.value || !session.user || editor.paused || !editor.document) return;
+  access.value = null; accessRefreshFailed.value = false; loadingAccess.value = true; message.value = '';
+  const request = ++accessRequest;
+  const epoch = session.epoch; const editorEpoch = editor.epoch; const document = editor.document;
+  const current = () => request === accessRequest && epoch === session.epoch && editorEpoch === editor.epoch && editor.document === document && !editor.paused;
+  try { const value = await client.readDocument(document.id); if (current()) access.value = value.access; }
+  catch (error) {
+    if (!current() || (error instanceof ApiError && error.code === 'stale')) return;
+    accessRefreshFailed.value = true;
+    await failure(error, epoch);
+  }
+  finally { if (request === accessRequest) loadingAccess.value = false; }
 }
 async function login(name: string, password: string) {
   busy.value = true; message.value = ''; directory.reset();
@@ -52,7 +61,7 @@ async function login(name: string, password: string) {
 function discardWork() {
   if (editor.saving) return false;
   if (editor.hasUnsavedWork && !window.confirm('草稿、未确认的保存结果或合并参考仍未处理。取消可继续保留；确定将明确丢弃这些内容。请先复制需要保留的正文。')) return false;
-  editor.setIdentity(session.user?.id ?? null, { discard: true }); access.value = null; blockedSave.value = false;
+  editor.setIdentity(session.user?.id ?? null, { discard: true }); access.value = null; blockedSave.value = false; accessRefreshFailed.value = false;
   return true;
 }
 async function logout() {
@@ -64,7 +73,7 @@ async function logout() {
 }
 function acceptPending() {
   if (!window.confirm('确定丢弃原账号的草稿和合并参考，并进入新账号？请先复制需要保留的内容。')) return;
-  if (session.acceptPending({ discard: true })) { access.value = null; blockedSave.value = false; syncDirectory(); }
+  if (session.acceptPending({ discard: true })) { access.value = null; blockedSave.value = false; accessRefreshFailed.value = false; syncDirectory(); }
 }
 async function toggle(id: string) {
   const epoch = session.epoch;
@@ -108,7 +117,7 @@ onUnmounted(() => { window.removeEventListener('beforeunload', beforeUnload); wi
     <header>
       <template v-if="session.user">
         <span>{{ session.user.display_name }}</span>
-        <button :disabled="busy || !!editor.saving || loadingDocument" @click="logout">退出登录</button>
+        <button :disabled="busy || loadingAccess || !!editor.saving || loadingDocument" @click="logout">退出登录</button>
       </template>
       <LoginPanel v-else-if="!session.blocked" :busy="busy" :ready="ready && session.initialized" @login="login" />
       <template v-else>
@@ -124,12 +133,14 @@ onUnmounted(() => { window.removeEventListener('beforeunload', beforeUnload); wi
       <aside v-if="session.user">
         <h2>目录</h2>
         <DirectoryTree v-if="directory.root" :node="directory.root" :state="directory"
-          :selected="editor.document?.id ?? null" :disabled="busy || !!editor.saving || loadingDocument"
+          :selected="editor.document?.id ?? null" :disabled="busy || loadingAccess || !!editor.saving || loadingDocument"
           @toggle="toggle" @select="select" />
         <p v-else>没有可访问的根目录。</p>
       </aside>
       <article>
         <p v-if="loadingDocument">正在读取文档…</p>
+        <button v-if="accessRefreshFailed && session.user && !editor.paused && editor.document"
+          :disabled="busy || loadingAccess || loadingDocument" @click="refreshDocumentAccess">重新读取文档权限（保留草稿）</button>
         <DocumentEditor :editor="editor" :editable="editable" :status="status" :busy="busy || loadingLatest"
           @edit="editor.edit($event)" @save="save" @latest="latest" @merge="merge" />
       </article>
