@@ -10,7 +10,7 @@
 
 **Spec:** [已批准设计](../specs/2026-10-07-vue-fastapi-minimal-loop-design.md)。
 
-状态：用户授权主 agent 审阅计划并以 subagent 分任务实施。计划中的命令和预期结果尚未执行，不代表检查已通过。
+状态：已按用户批准的路线完成六项实施及审阅。Python 回归、前端状态检查和真实 HTTP 代理闭环通过；typecheck/build 复用未改动代码的最终成功记录。登录页截图超时，视觉检查和浏览器完整交互未验证；实际证据见文末。
 
 ## Global Constraints
 
