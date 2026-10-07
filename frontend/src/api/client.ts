@@ -63,7 +63,7 @@ export class ApiClient {
   setMemberRole(user_id: string, role: string, expected_version: number) { return this.request<WorkspaceResponse>('/api/workspace/members', workspace, 'PUT', {user_id, role, expected_version}, 'csrf'); }
   removeMember(user_id: string, expected_version: number) { return this.request<WorkspaceResponse>('/api/workspace/members', workspace, 'DELETE', {user_id, expected_version}, 'csrf'); }
   createFolder(parent_id: string, name: string) { return this.request<NodeResponse>('/api/folder', nodeResponse, 'POST', {parent_id, name}, 'csrf'); }
-  createDocument(parent_id: string, name: string) { return this.request<DocumentResponse>('/api/document', document, 'POST', {parent_id, name}, 'csrf'); }
+  createDocument(parent_id: string, name: string, visibility: 'inherit' | 'private' = 'inherit') { return this.request<DocumentResponse>('/api/document', document, 'POST', {parent_id, name, visibility}, 'csrf'); }
   renameNode(object_id: string, name: string, expected_version: number) { return this.request<NodeResponse>('/api/node/rename', nodeResponse, 'PUT', {object_id, name, expected_version}, 'csrf'); }
   prepareDelete(folderId: string) { return this.request<DeletePlan>('/api/folder/delete-plan?folder_id=' + encodeURIComponent(folderId), v => record(v) && string(v.object_id) && typeof v.version === 'number' && string(v.subtree_token) && Array.isArray(v.items) && v.items.every(i => record(i) && node(i.node) && typeof i.depth === 'number')); }
   deleteNode(object_id: string, expected_version: number, plan?: DeletePlan) { return this.request('/api/node', ok, 'DELETE', {object_id, expected_version, recursive: !!plan, ...(plan ? {expected_subtree_token: plan.subtree_token} : {})}, 'csrf'); }

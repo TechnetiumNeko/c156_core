@@ -13,7 +13,8 @@ const options = computed(() => {
   if (props.node.kind === 'document') list.push({label: actions.includes('edit') ? '打开编辑' : '打开文档', key: 'edit'});
   if (actions.includes('rename')) list.push({label: '重命名', key: 'rename'});
   if (actions.includes('delete')) list.push({label: '删除', key: 'delete'});
-  return list.map(item => ({...item, disabled: props.disabled}));
+  else if (props.node.kind === 'folder' && props.node.id !== props.state.root?.id) list.push({label: '无法删除：权限不足或包含受限内容', key: 'delete', disabled: true});
+  return list.map(item => ({...item, disabled: props.disabled || item.disabled}));
 });
 function show(event: MouseEvent) {if (!options.value.length || props.disabled) return; x.value = event.clientX; y.value = event.clientY; menu.value = true;}
 async function retry() {try {await props.state.loadChildren(props.node.id);} catch (error) {emit('failure', error);}}

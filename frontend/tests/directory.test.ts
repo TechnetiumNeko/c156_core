@@ -26,3 +26,19 @@ test('failed read stays an error and can be retried without becoming empty direc
   assert.equal(state.children.root, undefined); assert.equal(state.errors.root, 'Denied'); assert.equal(state.loading.root, false);
   failed = false; await state.loadChildren('root'); assert.deepEqual(state.children.root, [child]); assert.equal(state.errors.root, undefined);
 });
+
+test('blocked folder deletion shows feedback and preserves the draft and cached directory', async () => {
+  const { EditorState } = await import('../src/state/editor.ts');
+  const { SessionState } = await import('../src/state/session.ts');
+  const { useFileOperations } = await import('../src/composables/useFileOperations.ts');
+  const client = new ApiClient(async () => json({error: {code: 'forbidden', message: 'Access denied.'}}, 403));
+  const editor = new EditorState(); editor.setIdentity('alice');
+  editor.open({...child, content: '原文', revision_id: 'r1'}); editor.edit('未保存的草稿');
+  const session = new SessionState(client, editor);
+  const directory = new DirectoryState(client); directory.setRoot(root, 'alice'); directory.children.root = [child];
+  const files = useFileOperations(client, session, directory, editor, async () => {}, async () => {}, async () => true);
+  await files.open('delete', root);
+  assert.match(files.message.value, /权限/); assert.match(files.message.value, /未执行/);
+  assert.equal(files.messageType.value, 'error'); assert.equal(files.busy.value, false);
+  assert.deepEqual(directory.children.root, [child]); assert.equal(editor.draft, '未保存的草稿');
+});
