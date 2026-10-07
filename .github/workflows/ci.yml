@@ -93,7 +93,7 @@ jobs:
           ACR_NAMESPACE: ${{ vars[format('{0}_ACR_NAMESPACE', inputs.target_environment == 'prod' && 'PROD' || 'TEST')] }}
           ACR_USERNAME: ${{ secrets[format('{0}_ACR_USERNAME', inputs.target_environment == 'prod' && 'PROD' || 'TEST')] }}
           ACR_PASSWORD: ${{ secrets[format('{0}_ACR_PASSWORD', inputs.target_environment == 'prod' && 'PROD' || 'TEST')] }}
-          DEPLOY_HOST: ${{ vars[format('{0}_DEPLOY_HOST', inputs.target_environment == 'prod' && 'PROD' || 'TEST')] }}
+          DEPLOY_HOST: ${{ secrets[format('{0}_DEPLOY_HOST', inputs.target_environment == 'prod' && 'PROD' || 'TEST')] }}
           DEPLOY_USER: ${{ vars[format('{0}_DEPLOY_USER', inputs.target_environment == 'prod' && 'PROD' || 'TEST')] }}
           SSH_KEY: ${{ secrets[format('{0}_DEPLOY_SSH_KEY', inputs.target_environment == 'prod' && 'PROD' || 'TEST')] }}
           KNOWN_HOSTS: ${{ secrets[format('{0}_DEPLOY_KNOWN_HOSTS', inputs.target_environment == 'prod' && 'PROD' || 'TEST')] }}
@@ -168,7 +168,7 @@ jobs:
         env:
           BACKEND_IMAGE: ${{ steps.publish.outputs.backend }}
           FRONTEND_IMAGE: ${{ steps.publish.outputs.frontend }}
-          DEPLOY_HOST: ${{ vars[format('{0}_DEPLOY_HOST', inputs.target_environment == 'prod' && 'PROD' || 'TEST')] }}
+          DEPLOY_HOST: ${{ secrets[format('{0}_DEPLOY_HOST', inputs.target_environment == 'prod' && 'PROD' || 'TEST')] }}
           DEPLOY_PORT: ${{ vars[format('{0}_DEPLOY_PORT', inputs.target_environment == 'prod' && 'PROD' || 'TEST')] || '22' }}
           DEPLOY_USER: ${{ vars[format('{0}_DEPLOY_USER', inputs.target_environment == 'prod' && 'PROD' || 'TEST')] }}
           DEPLOY_ROOT: ${{ vars[format('{0}_DEPLOY_ROOT', inputs.target_environment == 'prod' && 'PROD' || 'TEST')] || '/srv/c156' }}

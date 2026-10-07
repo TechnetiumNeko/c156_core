@@ -24,7 +24,7 @@
 | Variable | `TEST_DEPLOY_ENABLED` | `PROD_DEPLOY_ENABLED` | 对应服务器准备就绪后填 `true` |
 | Variable | `TEST_ACR_REGISTRY` | `PROD_ACR_REGISTRY` | ACR 公网域名，不带协议或路径 |
 | Variable | `TEST_ACR_NAMESPACE` | `PROD_ACR_NAMESPACE` | 已创建的命名空间 |
-| Variable | `TEST_DEPLOY_HOST` | `PROD_DEPLOY_HOST` | 对应服务器公网 IP／SSH 域名 |
+| Secret | `TEST_DEPLOY_HOST` | `PROD_DEPLOY_HOST` | 对应服务器公网 IP／SSH 域名 |
 | Variable | `TEST_DEPLOY_PORT` | `PROD_DEPLOY_PORT` | 对应 SSH 端口，通常 `22` |
 | Variable | `TEST_DEPLOY_USER` | `PROD_DEPLOY_USER` | 在对应服务器执行手册的账号 |
 | Variable | `TEST_DEPLOY_ROOT` | `PROD_DEPLOY_ROOT` | `/srv/c156` |
@@ -36,6 +36,8 @@
 两目标使用同一个 ACR 时，可在两组中分别填相同的 ACR 值；主机、SSH 和数据按服务器分开。两个部署账号都需要 Docker、项目目录以及对应 Nginx 操作权限。
 
 TEST_DEPLOY_ENABLED 未设为 true 时，main 自动发布不会推镜像或更改服务器。手动选 test／prod 时，对应开关未启用会明确报错。选 prod 后如果 PROD_ 参数缺失，会报缺失项，**不会借用 TEST_ 参数**。
+
+**服务器地址也填 Secrets：** TEST_DEPLOY_HOST／PROD_DEPLOY_HOST 不填 Variables，减少 Actions 日志暴露服务器地址。若此前已填在 Variables，先在 Secrets 创建同名项，确认保存成功后再删除 Variable；旧日志不会因此自动消失。
 
 **如果之前已经填过配置：** 在 Repository 新建上表的 TEST_／PROD_ 参数。旧无前缀参数和 Environment 参数不会被新工作流读取；确认其他工作流不需要后，再清理旧项。无需 DEPLOY_ENVIRONMENT 标记。不要重跑仍使用旧方案的历史工作流。
 

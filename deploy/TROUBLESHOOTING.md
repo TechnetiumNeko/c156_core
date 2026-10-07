@@ -99,7 +99,7 @@ ss -H -ltn 'sport = :28157'
 | --- | --- |
 | `Permission denied (publickey)` | Repository 中本次目标的 TEST_DEPLOY_USER／TEST_DEPLOY_SSH_KEY 或 PROD_ 对应项，以及公钥是否装在该账号 authorized_keys |
 | `Host key verification failed` | 核对服务器指纹及 DEPLOY_KNOWN_HOSTS；非 22 端口用 `[host]:port`，不关闭主机校验 |
-| `Connection timed out`／`refused` | DEPLOY_HOST、DEPLOY_PORT、SSH 服务、安全组和防火墙 |
+| `Connection timed out`／`refused` | 对应 TEST_DEPLOY_HOST／PROD_DEPLOY_HOST Secret、端口 Variable、SSH 服务、安全组和防火墙 |
 | rsync `command not found` | runner 与服务器均需要 rsync，服务器管理员补齐 |
 | mkdir `Permission denied`／`No such file` | 先让朋友完成 setup，确认 /srv/c156/releases 存在且 DEPLOY_USER 可写 |
 
@@ -116,7 +116,8 @@ ss -H -ltn 'sport = :28157'
 | 看不到 workflow 或 Run workflow | 确认部署代码已在 main，仓库允许 Actions；手册要求在 main 手动运行 |
 | deploy 被跳过 | PR 不发布，手动分支应选 main；推送 main 的目标固定为 test |
 | 日志显示 Target not enabled／Deployment disabled | 在 Repository Variables 设置本目标的 `TEST_DEPLOY_ENABLED=true` 或 `PROD_DEPLOY_ENABLED=true` |
-| Missing Repository parameter | 按日志中的完整 TEST_／PROD_ 名称补齐；凭据填 Secrets，普通参数填 Variables，不能省略前缀 |
+| 缺少 TEST_DEPLOY_HOST／PROD_DEPLOY_HOST | 地址须填 Repository Secrets，放在 Variables 不会被读取；名称与目标对应 |
+| Missing Repository parameter | 按日志中的完整 TEST_／PROD_ 名称补齐；服务器地址和凭据填 Secrets，其他参数按配置表填 Variables，不能省略前缀 |
 | 意外等待 Environment 审批或仍提示 DEPLOY_ENVIRONMENT | 正在运行旧工作流；确认 main 已合并 Repository 方案，再 Run workflow 开新运行 |
 | checks 红了 | 打开第一个失败步骤，交给维护者修代码；不跳过检查强行部署 |
 | images 构建或冒烟红了 | 维护者查看构建／容器日志；认证与拉取问题查 [E04](#e04) |
