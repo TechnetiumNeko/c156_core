@@ -96,7 +96,6 @@ jobs:
           DEPLOY_HOST: ${{ secrets[format('{0}_DEPLOY_HOST', inputs.target_environment == 'prod' && 'PROD' || 'TEST')] }}
           DEPLOY_USER: ${{ vars[format('{0}_DEPLOY_USER', inputs.target_environment == 'prod' && 'PROD' || 'TEST')] }}
           SSH_KEY: ${{ secrets[format('{0}_DEPLOY_SSH_KEY', inputs.target_environment == 'prod' && 'PROD' || 'TEST')] }}
-          KNOWN_HOSTS: ${{ secrets[format('{0}_DEPLOY_KNOWN_HOSTS', inputs.target_environment == 'prod' && 'PROD' || 'TEST')] }}
         run: |
           set -euo pipefail
           [[ "$TARGET_ENVIRONMENT" == test || "$TARGET_ENVIRONMENT" == prod ]]
@@ -111,10 +110,9 @@ jobs:
             printf 'Target %s is not enabled; no images pushed or server changed.\n' "$TARGET_ENVIRONMENT"
             exit 0
           fi
-          for key in ACR_REGISTRY ACR_NAMESPACE ACR_USERNAME ACR_PASSWORD DEPLOY_HOST DEPLOY_USER SSH_KEY KNOWN_HOSTS; do
+          for key in ACR_REGISTRY ACR_NAMESPACE ACR_USERNAME ACR_PASSWORD DEPLOY_HOST DEPLOY_USER SSH_KEY; do
             case $key in
               SSH_KEY) suffix=DEPLOY_SSH_KEY ;;
-              KNOWN_HOSTS) suffix=DEPLOY_KNOWN_HOSTS ;;
               *) suffix=$key ;;
             esac
             [[ -n "${!key}" ]] || { printf 'Missing Repository parameter: %s_%s\n' "$prefix" "$suffix" >&2; exit 1; }
@@ -171,9 +169,8 @@ jobs:
           DEPLOY_HOST: ${{ secrets[format('{0}_DEPLOY_HOST', inputs.target_environment == 'prod' && 'PROD' || 'TEST')] }}
           DEPLOY_PORT: ${{ vars[format('{0}_DEPLOY_PORT', inputs.target_environment == 'prod' && 'PROD' || 'TEST')] || '22' }}
           DEPLOY_USER: ${{ vars[format('{0}_DEPLOY_USER', inputs.target_environment == 'prod' && 'PROD' || 'TEST')] }}
-          DEPLOY_ROOT: ${{ vars[format('{0}_DEPLOY_ROOT', inputs.target_environment == 'prod' && 'PROD' || 'TEST')] || '/srv/c156' }}
+          DEPLOY_ROOT: ${{ vars[format('{0}_DEPLOY_ROOT', inputs.target_environment == 'prod' && 'PROD' || 'TEST')] }}
           SSH_KEY: ${{ secrets[format('{0}_DEPLOY_SSH_KEY', inputs.target_environment == 'prod' && 'PROD' || 'TEST')] }}
-          KNOWN_HOSTS: ${{ secrets[format('{0}_DEPLOY_KNOWN_HOSTS', inputs.target_environment == 'prod' && 'PROD' || 'TEST')] }}
           SHA: ${{ github.sha }}
           SEQUENCE: ${{ github.run_number }}
           ATTEMPT: ${{ github.run_attempt }}
@@ -181,19 +178,25 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$DEPLOY_HOST" =~ ^[a-zA-Z0-9.-]+$ && "$DEPLOY_USER" =~ ^[a-zA-Z0-9_-]+$ ]]
-          [[ "$DEPLOY_PORT" =~ ^[0-9]{1,5}$ && "$DEPLOY_ROOT" =~ ^/[a-zA-Z0-9_./-]+$ && "$DEPLOY_ROOT" != / && "$DEPLOY_ROOT" != *'/../'* ]]
+          [[ "$DEPLOY_PORT" =~ ^[0-9]{1,5}$ ]]
           bash deploy/package.sh "$RUNNER_TEMP/release" "$SHA" "$BACKEND_IMAGE" "$FRONTEND_IMAGE" "$SEQUENCE"
           install -d -m 700 "$HOME/.ssh"
           printf '%s\n' "$SSH_KEY" > "$HOME/.ssh/id_c156"
-          printf '%s\n' "$KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
-          chmod 600 "$HOME/.ssh/id_c156" "$HOME/.ssh/known_hosts"
-          ssh_options=(-i "$HOME/.ssh/id_c156" -p "$DEPLOY_PORT" -o StrictHostKeyChecking=yes -o BatchMode=yes)
+          chmod 600 "$HOME/.ssh/id_c156"
+          ssh_options=(-i "$HOME/.ssh/id_c156" -p "$DEPLOY_PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes)
+          source deploy/common.sh
+          if [[ -z "$DEPLOY_ROOT" ]]; then
+            remote_home=$(ssh "${ssh_options[@]}" "$DEPLOY_USER@$DEPLOY_HOST" 'printf "%s" "$HOME"')
+            validate_root "$remote_home"
+            DEPLOY_ROOT="${remote_home%/}/c156"
+          fi
+          validate_root "$DEPLOY_ROOT"
           [[ "$ATTEMPT" =~ ^[1-9][0-9]*$ ]]
           destination="$DEPLOY_ROOT/releases/$SEQUENCE-$ATTEMPT-$SHA"
           # Paths are validated above and intentionally expanded on the runner.
           # shellcheck disable=SC2029
           ssh "${ssh_options[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "mkdir '$destination'"
-          rsync -az -e "ssh -i $HOME/.ssh/id_c156 -p $DEPLOY_PORT -o StrictHostKeyChecking=yes -o BatchMode=yes" "$RUNNER_TEMP/release/" "$DEPLOY_USER@$DEPLOY_HOST:$destination/"
+          rsync -az -e "ssh -i $HOME/.ssh/id_c156 -p $DEPLOY_PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes" "$RUNNER_TEMP/release/" "$DEPLOY_USER@$DEPLOY_HOST:$destination/"
           deploy_args=
           [[ "$PREPARE_ONLY" != true ]] || deploy_args=--prepare
           # Paths are validated above and intentionally expanded on the runner.

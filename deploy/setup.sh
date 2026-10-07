@@ -2,15 +2,20 @@
 set -euo pipefail
 # shellcheck source=common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
-root=${1:-/srv/c156}; action=${2:-}
+root=${1:-$HOME/c156}; action=${2:-}
+validate_root "$root"
 [[ -z $action || $action == --init-db ]] || fail 'usage: setup.sh [ROOT] [--init-db]'
 if [[ ! -f $root/config.env ]]; then
   mkdir -p "$root"
   install -m 600 "$(dirname "${BASH_SOURCE[0]}")/config.env.example" "$root/config.env"
+  sed -i "s|^DEPLOY_ROOT=.*$|DEPLOY_ROOT=$root|" "$root/config.env"
   printf 'Edit SITE_DOMAIN in %s/config.env, then run setup again.\n' "$root"
   exit 0
 fi
 load_config "$root"
+if grep -qx 'DEPLOY_ROOT=' "$root/config.env"; then
+  sed -i "s|^DEPLOY_ROOT=$|DEPLOY_ROOT=$root|" "$root/config.env"
+fi
 [[ $SITE_DOMAIN != docs.example.com ]] || fail 'set your real SITE_DOMAIN first'
 check_environment
 if [[ ! -L $root/current ]]; then

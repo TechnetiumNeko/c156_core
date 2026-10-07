@@ -46,3 +46,37 @@ class DeploymentPreflightTest(unittest.TestCase):
             result = subprocess.run(['bash', '-c', 'source "$1"; DEPLOY_ROOT=$2; release_pointer "$2/current"', 'check', str(common), str(root)], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.strip(), str(target))
+
+    def test_setup_records_selected_directory_without_manual_root_edit(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory) / 'c156'
+            setup = SCRIPT.with_name('setup.sh')
+            result = subprocess.run(['bash', str(setup), str(root)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            config = root / 'config.env'
+            self.assertTrue(config.is_file())
+            check = subprocess.run(['bash', '-c', 'source "$1"; load_config "$2"; printf "%s" "$DEPLOY_ROOT"', 'check', str(SCRIPT.with_name('common.sh')), str(root)], capture_output=True, text=True)
+            self.assertEqual(check.returncode, 0, check.stderr)
+            self.assertEqual(check.stdout, str(root))
+            self.assertEqual(config.stat().st_mode & 0o777, 0o600)
+
+    def test_setup_rejects_root_aliases_before_creating_files(self):
+        common = SCRIPT.with_name('common.sh')
+        for path in ('/', '/.', '//', '/./', '/tmp/../', '/tmp/c156/', '/tmp/./c156'):
+            with self.subTest(path=path):
+                result = subprocess.run(['bash', '-c', 'source "$1"; validate_root "$2"', 'check', str(common), path], capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('invalid deployment root', result.stderr)
+
+    def test_setup_fills_copied_template_root_without_resetting_settings(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory) / 'c156'; root.mkdir()
+            config = root / 'config.env'
+            config.write_text(SCRIPT.with_name('config.env.example').read_text())
+            result = subprocess.run(['bash', str(SCRIPT.with_name('setup.sh')), str(root)], capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('set your real SITE_DOMAIN first', result.stderr)
+            check = subprocess.run(['bash', '-c', 'source "$1"; load_config "$2"; printf "%s" "$DEPLOY_ROOT"', 'check', str(SCRIPT.with_name('common.sh')), str(root)], capture_output=True, text=True)
+            self.assertEqual(check.returncode, 0, check.stderr)
+            self.assertEqual(check.stdout, str(root))
+            self.assertIn('SITE_DOMAIN=docs.example.com', config.read_text())

@@ -227,3 +227,13 @@ HTTP webroot 验证无需 AliDNS API 凭据。本阶段无需额外阿里云 Acc
 上游是个人仓库，当前协作者能配置 Repository Secrets/Variables，但不能配置 GitHub Environments。用户明确选择 Repository 方案。此确认替代前述 Environment 级配置方案；触发规则仍为 main 自动 test、prod 手动选择。
 
 所有部署参数在 Repository 中按 TEST_／PROD_ 前缀存储，工作流根据选定目标索引对应名称，不使用 GitHub Environment，不读取旧无前缀项，不在 PROD_ 缺失时借用 TEST_。因此不再需要 DEPLOY_ENVIRONMENT 标记。两组凭据属于仓库统一管理范围，前缀用于分组，不提供 Environment 的审批或访问隔离。具体名称以 deploy/MAINTAINER.md 为准。
+
+## 最新确认：简化 SSH 配置
+
+用户明确取消 DEPLOY_KNOWN_HOSTS 和固定服务器主机身份校验。SSH 及 rsync 均使用 StrictHostKeyChecking=no、UserKnownHostsFile=/dev/null，保留私钥登录和 BatchMode。此确认替代前文的严格主机校验要求；操作手册已删除相关必填项及生成步骤。每个目标仅需 4 个 Secrets：DEPLOY_HOST、ACR_USERNAME、ACR_PASSWORD、DEPLOY_SSH_KEY（均带 TEST_／PROD_ 前缀）。
+
+## 最新确认：用户目录默认值与首次 git clone
+
+用户确认默认部署目录为部署账号家目录下的 c156。setup/rollback 默认使用该用户 HOME/c156；CI 未设置 DEPLOY_ROOT 时，通过 SSH 读取远端用户的 HOME，校验后使用其 c156 子目录，不使用 runner 的 HOME。初次生成 config.env 自动写入实际路径；显式自定义目录仍支持。
+
+首次安装直接 HTTPS git clone 到 ~/c156，在同一项目根目录生成并填写 config.env，再运行 deploy/setup.sh；不要求压缩包交接，也不新增 bootstrap 目录。服务器配置、发布状态和运行目录加入 Git 忽略。后续发布继续由 Actions 交付精确版本文件，不自动 git pull，也不修改既有数据库初始化约定。

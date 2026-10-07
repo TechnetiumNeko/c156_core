@@ -1,8 +1,10 @@
 # 部署操作手册
 
+你的 test 服务器先看 [TEST 起步清单](TEST.md)，里面直接列出 8 项必填和 2 项可选 GitHub 参数和 /home/deploy/c156 的用法。
+
 第一次部署按下面 **1 → 6** 做。每步看到“正常结果”再继续；报错就点该步的排错链接。以后更新由 GitHub Actions 完成。
 
-本文使用 `/srv/c156` 和 `28156`，适用于已有 Docker、Compose、Nginx 和证书面板的服务器。你的 Ubuntu ECS 使用 `test`，朋友服务器使用 `prod`；GitHub 参数放在 Repository，分别以 TEST_／PROD_ 开头；两台分别执行同一套步骤，无需安装 Python、Node 或 Certbot。
+默认目录是部署用户的 `$HOME/c156`（deploy 用户为 `/home/deploy/c156`，root 用户为 `/root/c156`），默认端口 `28156`。文中的面板路径以 deploy 用户为例，其他用户按 setup 输出的实际路径填写。适用于已有 Docker、Compose、Nginx 和证书面板的服务器。你的 Ubuntu ECS 使用 `test`，朋友服务器使用 `prod`；GitHub 参数放在 Repository，分别以 TEST_／PROD_ 开头；两台分别执行同一套步骤，无需安装 Python、Node 或 Certbot。
 
 ## 开始前：维护者把东西准备好
 
@@ -10,7 +12,7 @@
 
 | 交给朋友 | 填什么 |
 | --- | --- |
-| 部署文件 | `c156-deploy.zip`，解压后包含 `deploy/setup.sh` 等文件 |
+| 仓库地址 | `https://github.com/TechnetiumNeko/c156_core.git`，维护者先确认部署代码已在 main |
 | 部署环境 | 你的服务器填 `test`，朋友服务器填 `prod`；后面两次 Run workflow 都选这个环境 |
 | 网站域名 | 一个确定的域名，例如 `docs.example.cn` |
 | ACR 公网域名 | 从控制台复制，不带 `https://` 或仓库路径 |
@@ -20,21 +22,25 @@
 
 中国内地服务器上线前先确认域名备案已完成。[阿里云说明](https://help.aliyun.com/zh/icp-filing/basic-icp-service/support/for-the-record-process-faq)
 
-## 1. 朋友：上传文件，检查服务器
+## 1. 朋友：git clone，检查服务器
 
-用上表的服务器账号登录。用面板文件管理器将压缩包上传、解压到 `/tmp/c156-deploy`。
+用上表的服务器账号登录。首次直接克隆到自己的 c156 目录：
 
 **在服务器终端逐行运行：**
 
 ```bash
-ls /tmp/c156-deploy/deploy/setup.sh
+git clone https://github.com/TechnetiumNeko/c156_core.git "$HOME/c156"
+cd "$HOME/c156"
+ls deploy/setup.sh
 docker info >/dev/null && echo 'Docker OK'
 docker compose version
 nginx -v
 command -v curl flock tar rsync ss
 ```
 
-**正常结果：** 第一行显示文件路径；随后有 `Docker OK`、Compose 和 Nginx 版本；最后显示五个命令的路径。
+**正常结果：** 仓库克隆成功，显示 deploy/setup.sh 路径；随后有 `Docker OK`、Compose 和 Nginx 版本；最后显示五个命令的路径。
+
+如果 ~/c156 已经存在，不要删除或覆盖，按 [E01](TROUBLESHOOTING.md#e01) 确认是否已克隆。公开仓库用 HTTPS 克隆，无需另配 GitHub Deploy Key。
 
 如果 `nginx -v` 找不到命令，但面板的 Nginx 正常运行，记录面板 Nginx 的实际路径，下一步填 `NGINX_BIN`。其他命令缺失或权限报错，先解决再继续。
 
@@ -42,21 +48,22 @@ command -v curl flock tar rsync ss
 
 ## 2. 朋友：生成配置，只改域名
 
-**先运行：**
+**复制配置（已有 config.env 时保留）：**
 
 ```bash
-bash /tmp/c156-deploy/deploy/setup.sh /srv/c156
+cd "$HOME/c156"
+if [ ! -f config.env ]; then
+  install -m 600 deploy/config.env.example config.env
+fi
 ```
 
-**第一次的正常结果：** 显示 `Edit SITE_DOMAIN in /srv/c156/config.env`。这是提示你改配置，尚未创建应用数据目录。若配置已存在，脚本直接检查配置；按下一段检查即可。
-
-用面板文件管理器编辑 `/srv/c156/config.env`，把这一行改成真实域名：
+用编辑器或面板打开项目根目录的 config.env（deploy 用户默认 `/home/deploy/c156/config.env`），把这一行改成真实域名：
 
 ```dotenv
 SITE_DOMAIN=docs.example.cn
 ```
 
-这里只填域名：**不加 `https://`，不加 `/`，不加引号或空格**。其他设置通常不用改。
+DEPLOY_ROOT 留空即可，setup 会使用当前用户家目录/c156 并写入实际路径；无需手工改目录。域名这里只填：**不加 `https://`，不加 `/`，不加引号或空格**。其他设置通常不用改。
 
 如果第一步记录了面板 Nginx 路径，再改这一行，例如：
 
@@ -67,7 +74,7 @@ NGINX_BIN=/www/server/nginx/sbin/nginx
 保存后运行：
 
 ```bash
-bash /tmp/c156-deploy/deploy/setup.sh /srv/c156
+bash "$HOME/c156/deploy/setup.sh"
 ```
 
 **正常结果：** 最后一行包含 `Directories ready`，并列出 data、assets、backups 的路径。
@@ -88,7 +95,7 @@ docker login YOUR_ACR_REGISTRY
 
 **需要登录时的正常结果：** `Login Succeeded`。然后告诉维护者：“服务器已准备好，可以准备镜像了。”
 
-**运行前确认 SSH 配置完成：** Actions 登录服务器所用钥匙及 KNOWN_HOSTS 见 [SSH 操作步骤](SSH.md)。
+**运行前确认 SSH 配置完成：** Actions 登录服务器所用钥匙 见 [SSH 操作步骤](SSH.md)。
 
 **维护者在 GitHub 操作：**
 
@@ -99,10 +106,10 @@ docker login YOUR_ACR_REGISTRY
 **朋友确认：**
 
 ```bash
-ls /srv/c156/prepared/compose.yaml
+ls "$HOME/c156/prepared/compose.yaml"
 ```
 
-**正常结果：** 显示 `/srv/c156/prepared/compose.yaml`。这一步只准备文件和镜像，网站尚未启动。
+**正常结果：** 显示 `/home/deploy/c156/prepared/compose.yaml`。这一步只准备文件和镜像，网站尚未启动。
 
 **失败定位：** [E04 ACR 登录或拉镜像失败](TROUBLESHOOTING.md#e04)；[E05 SSH 失败](TROUBLESHOOTING.md#e05)；[E06 Actions 或 prepared 缺失](TROUBLESHOOTING.md#e06)。
 
@@ -111,7 +118,7 @@ ls /srv/c156/prepared/compose.yaml
 **仅第一次创建空库时运行：**
 
 ```bash
-bash /srv/c156/prepared/setup.sh /srv/c156 --init-db
+bash "$HOME/c156/prepared/setup.sh" "$HOME/c156" --init-db
 ```
 
 看到 `Password:` 后输入网站管理员密码；看到 `Confirm password:` 再输一次。输入时屏幕不显示字符，这是正常的。网站账号固定为 **admin**，密码是这里设置的，与 ACR 密码无关。
@@ -133,9 +140,11 @@ bash /srv/c156/prepared/setup.sh /srv/c156 --init-db
 
 ```nginx
 location / {
-    include /srv/c156/nginx/proxy.inc;
+    include /home/deploy/c156/nginx/proxy.inc;
 }
 ```
+
+include 必须使用该服务器的实际绝对路径，不能写 $HOME 或 ~；路径可从 config.env 的 DEPLOY_ROOT 查看。
 
 这是该 location 的示例，**不要在已有 `location /` 旁再添加第二个，也不要在其中保留另一条 `proxy_pass`**。其他 location，特别是面板的证书验证入口，保持原样。保存并由面板校验、重载。
 
@@ -168,12 +177,12 @@ curl -fsS https://YOUR_DOMAIN/api/healthz
 
 ## 日常只记住这三件事
 
-**下载备份：** 用面板下载 `/srv/c156/backups/` 中已经完成的 `.sqlite` 快照。不要只下载运行中的 `data/c156.sqlite`；它可能还有 WAL 数据。资产目录 `/srv/c156/assets/` 另行打包。源码在每个 release 的 `source.tar.gz`，无需服务器 `git pull`。
+**下载备份：** 用面板下载 `/home/deploy/c156/backups/` 中已经完成的 `.sqlite` 快照。不要只下载运行中的 `data/c156.sqlite`；它可能还有 WAL 数据。资产目录 `/home/deploy/c156/assets/` 另行打包。源码在每个 release 的 `source.tar.gz`，无需服务器 `git pull`。
 
 **手动备份：** 在服务器复制运行：
 
 ```bash
-bash -c 'source /srv/c156/current/common.sh; load_config /srv/c156; compose_for /srv/c156/current exec -T backend python -m src.storage backup --database /data/c156.sqlite --output /backups/manual-$(date -u +%Y%m%dT%H%M%S).sqlite'
+bash -c 'source "$HOME/c156/current/common.sh"; load_config "$HOME/c156"; compose_for "$HOME/c156/current" exec -T backend python -m src.storage backup --database /data/c156.sqlite --output /backups/manual-$(date -u +%Y%m%dT%H%M%S).sqlite'
 ```
 
 正常时命令无报错结束，backups 中出现新的 `manual-…sqlite`。
@@ -181,7 +190,7 @@ bash -c 'source /srv/c156/current/common.sh; load_config /srv/c156; compose_for 
 **回退上一次成功发布：**
 
 ```bash
-bash /srv/c156/current/rollback.sh /srv/c156
+bash "$HOME/c156/current/rollback.sh" "$HOME/c156"
 ```
 
 正常时最后显示 `Deployed …`。只有一个成功版本时无法回退。回退保留当前数据库和资产，不用旧快照覆盖新数据。
@@ -192,7 +201,7 @@ bash /srv/c156/current/rollback.sh /srv/c156
 
 ## 面板自管代理接法：仅 include 不可用时看
 
-编辑 `/srv/c156/config.env`：
+编辑 `/home/deploy/c156/config.env`：
 
 ```dotenv
 NGINX_MANAGED=0

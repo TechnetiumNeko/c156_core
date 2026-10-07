@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+validate_root() {
+  local requested=$1
+  [[ $requested =~ ^/[a-zA-Z0-9_./-]+$ && $requested != / && $requested != *'//'* && $requested != *'/./'* && $requested != *'/../'* && $requested != */. && $requested != */.. && $requested != */ ]] || fail 'invalid deployment root'
+}
 load_config() {
   local requested=$1 key value line
-  [[ $requested =~ ^/[a-zA-Z0-9_./-]+$ && $requested != / && $requested != *'/../'* ]] || fail 'invalid deployment root'
+  validate_root "$requested"
   DEPLOY_ROOT=$requested; APP_PORT=28156; PROXY_NETWORK=172.30.156.0/24
   APP_UID=10001; APP_GID=10001; NGINX_MANAGED=1; NGINX_BIN=nginx; SITE_DOMAIN=
   [[ -f $requested/config.env ]] || fail "missing $requested/config.env"
@@ -11,7 +15,7 @@ load_config() {
     [[ -z $line || $line == \#* ]] && continue
     [[ $line == *=* ]] || fail 'config must use KEY=value'
     key=${line%%=*}; value=${line#*=}
-    case $key in SITE_DOMAIN|DEPLOY_ROOT|APP_PORT|PROXY_NETWORK|APP_UID|APP_GID|NGINX_MANAGED|NGINX_BIN) printf -v "$key" '%s' "$value" ;; *) fail "unknown config key: $key" ;; esac
+    case $key in DEPLOY_ROOT) [[ -z $value ]] || DEPLOY_ROOT=$value ;; SITE_DOMAIN|APP_PORT|PROXY_NETWORK|APP_UID|APP_GID|NGINX_MANAGED|NGINX_BIN) printf -v "$key" '%s' "$value" ;; *) fail "unknown config key: $key" ;; esac
   done < "$requested/config.env"
   [[ $DEPLOY_ROOT == "$requested" ]] || fail 'DEPLOY_ROOT differs from requested root'
   [[ $SITE_DOMAIN =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ && $SITE_DOMAIN == *.* && $SITE_DOMAIN != *..* ]] || fail 'invalid SITE_DOMAIN'

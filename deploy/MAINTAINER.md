@@ -1,6 +1,6 @@
 # 维护者部署准备
 
-朋友只需看 [6 步操作手册](README.md)。本文由项目维护者处理 GitHub、ACR 和交接文件。
+你的服务器先看 [TEST 起步清单：我要配什么](TEST.md)，朋友看 [6 步操作手册](README.md)。本文由项目维护者处理 GitHub、ACR 和交接文件。
 
 <a id="maintainer"></a>
 
@@ -25,13 +25,14 @@
 | Variable | `TEST_ACR_REGISTRY` | `PROD_ACR_REGISTRY` | ACR 公网域名，不带协议或路径 |
 | Variable | `TEST_ACR_NAMESPACE` | `PROD_ACR_NAMESPACE` | 已创建的命名空间 |
 | Secret | `TEST_DEPLOY_HOST` | `PROD_DEPLOY_HOST` | 对应服务器公网 IP／SSH 域名 |
-| Variable | `TEST_DEPLOY_PORT` | `PROD_DEPLOY_PORT` | 对应 SSH 端口，通常 `22` |
+| Variable（可选） | `TEST_DEPLOY_PORT` | `PROD_DEPLOY_PORT` | 对应 SSH 端口，通常 `22` |
 | Variable | `TEST_DEPLOY_USER` | `PROD_DEPLOY_USER` | 在对应服务器执行手册的账号 |
-| Variable | `TEST_DEPLOY_ROOT` | `PROD_DEPLOY_ROOT` | `/srv/c156` |
+| Variable（可选） | `TEST_DEPLOY_ROOT` | `PROD_DEPLOY_ROOT` | 不填时通过 SSH 读取部署用户家目录并使用其 c156 子目录；自定义时填绝对路径 |
 | Secret | `TEST_ACR_USERNAME` | `PROD_ACR_USERNAME` | ACR 登录用户名 |
 | Secret | `TEST_ACR_PASSWORD` | `PROD_ACR_PASSWORD` | ACR 登录密码／访问凭据 |
 | Secret | `TEST_DEPLOY_SSH_KEY` | `PROD_DEPLOY_SSH_KEY` | 对应服务器专用 SSH 私钥 |
-| Secret | `TEST_DEPLOY_KNOWN_HOSTS` | `PROD_DEPLOY_KNOWN_HOSTS` | 核对指纹后的对应主机记录 |
+
+已有 TEST_DEPLOY_ROOT=/home/deploy/c156 可以保留；省略它时默认也是部署用户的家目录/c156。setup.sh 不传目录时也用同一默认值，并自动写入 config.env。自定义路径仍需让 GitHub 与服务器配置一致。
 
 两目标使用同一个 ACR 时，可在两组中分别填相同的 ACR 值；主机、SSH 和数据按服务器分开。两个部署账号都需要 Docker、项目目录以及对应 Nginx 操作权限。
 
@@ -43,9 +44,9 @@ TEST_DEPLOY_ENABLED 未设为 true 时，main 自动发布不会推镜像或更�
 
 所有凭据由仓库协作者统一管理，TEST_／PROD_ 是配置分组；当前不使用 Environment 审批或访问隔离。prod 的发布入口仍是手动选择。
 
-创建 SSH 部署钥匙、查看已有文件、填写私钥和 KNOWN_HOSTS，按 [SSH 钥匙操作步骤](SSH.md)执行。
+创建 SSH 部署钥匙、查看已有文件、填写私钥，按 [SSH 钥匙操作步骤](SSH.md)执行。
 
-SSH 指纹必须在可信终端核对，不在流水线临时扫描后直接信任。非 22 端口的 known_hosts 用 `[host]:port` 格式。公钥先加入各自服务器对应账号的 authorized_keys。密码、私钥不要放进仓库或服务器 config.env。
+公钥先加入各自服务器对应账号的 authorized_keys。密码、私钥不要放进仓库或服务器 config.env。
 
 **手动发布怎么选：** Actions → Test, build and deploy → Run workflow，分支 main，选 `target_environment=test` 或 `prod`；这个字段只选择部署目标，不要求创建同名 GitHub Environment。首次拉镜像勾选 `prepare_only`；完成对应服务器初始化和面板配置后，再运行同环境且不勾选 prepare_only。两台的 prepared/current、发布序号和回退记录分别保存在各自服务器。
 
@@ -53,29 +54,26 @@ SSH 指纹必须在可信终端核对，不在流水线临时扫描后直接信�
 
 公开 ACR 可以匿名拉取时，服务器无需 docker login，也不用向朋友交付 ACR 推送密码。Actions 推送镜像仍需上述 ACR_USERNAME／ACR_PASSWORD Secrets；这是写权限凭据。
 
-**C. 打包交接文件。** 在包含本次部署代码的本地仓库运行：
+**C. 交接仓库地址和参数。** 无需打压缩包。朋友首次用 HTTPS git clone 到自己的 ~/c156，然后运行 deploy/setup.sh，在根目录填 config.env。公开仓库无需额外的 GitHub Deploy Key。
 
-```bash
-git archive --format=zip --output=c156-deploy.zip HEAD deploy
-```
+确认部署代码已在 main，再把仓库地址和操作手册交给朋友。等服务器检查、SSH 公钥和配置完成后运行 prepare；完成初始化和面板配置后正式发布。test 首次安装未准备好时先不要启用自动部署开关；prod 始终手动选择。
 
-交付压缩包及开头的信息表。等朋友完成服务器检查、SSH 公钥配置，以及第 3 步所需的镜像访问准备后再运行 prepare；完成第 5 步的面板配置后再正式部署。test 首次安装期间避免额外推送 main，因为它会触发 test 的正式部署。main 推送不会发布到 prod。
-
+首次 clone 用来取得 setup 和文档。后续仍由 Actions 交付固定版本发布文件和源码，不要求服务器自动 git pull。config.env、发布状态和运行目录已加入 Git 忽略，避免误提交服务器配置。
 
 ## 技术说明
 
-数据位置：
+数据位置（以 deploy 用户为例；其他用户使用实际家目录）：
 
 ```text
-/srv/c156/config.env        唯一服务器配置
-/srv/c156/data/             整个 SQLite 目录，包含 WAL/SHM
-/srv/c156/assets/           资产挂载目录
-/srv/c156/backups/          经过校验的快照
-/srv/c156/nginx/proxy.inc   项目代理片段
-/srv/c156/releases/         每次发布文件和同版本源码
-/srv/c156/current           当前成功发布
-/srv/c156/previous          上一次成功发布
-/srv/c156/prepared          首次准备好的发布
+/home/deploy/c156/config.env        唯一服务器配置
+/home/deploy/c156/data/             整个 SQLite 目录，包含 WAL/SHM
+/home/deploy/c156/assets/           资产挂载目录
+/home/deploy/c156/backups/          经过校验的快照
+/home/deploy/c156/nginx/proxy.inc   项目代理片段
+/home/deploy/c156/releases/         每次发布文件和同版本源码
+/home/deploy/c156/current           当前成功发布
+/home/deploy/c156/previous          上一次成功发布
+/home/deploy/c156/prepared          首次准备好的发布
 ```
 
 请求经过面板 Nginx（80/443）→ 本机 28156 → 前端容器 → FastAPI；后端不公开宿主机端口。默认只构建 amd64，匹配朋友的 x86_64 服务器。提供的 `6.6.47-12.oc9` 内核更接近 OpenCloudOS 9，可用 `cat /etc/os-release` 确认，不照 CentOS 7 的安装教程操作。

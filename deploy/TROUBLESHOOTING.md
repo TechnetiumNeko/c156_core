@@ -22,19 +22,16 @@
 
 ## E01：找不到 setup.sh
 
-**看到：** `No such file or directory`，路径是 `/tmp/c156-deploy/deploy/setup.sh`。
+**看到：** git clone 失败，或 ~/c156/deploy/setup.sh 不存在。
 
-在面板检查解压目录。正确结构是：
+| 现象 | 怎么处理 |
+| --- | --- |
+| git: command not found | 让服务器管理员安装 Git，再克隆 |
+| GitHub 连接超时 | 确认服务器能访问 GitHub，恢复网络后重试；首次成功后正常发布不依赖服务器 git pull |
+| destination path already exists | 如果目录内已有 .git 和 deploy/setup.sh，直接使用；若含现有数据或其他项目，不删除，交给维护者确认目录 |
+| 已克隆但没有 deploy/setup.sh | 确认上游 main 已合并部署代码，克隆了正确仓库；不要只下载一个脚本 |
 
-```text
-/tmp/c156-deploy/deploy/setup.sh
-/tmp/c156-deploy/deploy/common.sh
-/tmp/c156-deploy/deploy/config.env.example
-```
-
-如果多套了一层文件夹，将里面的 `deploy` 文件夹移到 `/tmp/c156-deploy/`。不要只上传 setup.sh，它还需要同目录的其他文件。
-
-**修好后：** `ls /tmp/c156-deploy/deploy/setup.sh` 显示路径，回手册第 1 步。
+**修好后：** `ls "$HOME/c156/deploy/setup.sh"` 显示文件，回手册第 1 步。
 
 <a id="e02"></a>
 
@@ -45,7 +42,7 @@
 | Docker socket `permission denied`／`Cannot connect` | 确认使用维护者填写的 DEPLOY_USER；让管理员检查 Docker 服务及该账号权限 |
 | `docker: command not found`／找不到 Compose | 请管理员检查已有安装和 PATH，不重新覆盖现有 Docker |
 | `missing command`／第 1 步少了路径 | 请管理员补齐对应命令；SSH 传输两端需要 rsync |
-| mkdir、chown、目录 `Permission denied` | 该账号需要操作 /srv/c156 和设置目录所有者；交给服务器管理员处理 |
+| mkdir、chown、目录 `Permission denied` | 该账号需要操作 /home/deploy/c156 和设置目录所有者；交给服务器管理员处理 |
 | 数据目录仍 permission denied | 核对 APP_UID/GID 和目录所有者；若是 SELinux 拒绝，为专用数据目录配置容器标签，不关闭 SELinux |
 
 复制报错原文给管理员，并说明你运行的是哪条命令。不要用 `chmod 777` 修生产目录。
@@ -56,13 +53,13 @@
 
 ## E03：配置、端口或 Docker 网络
 
-**先在面板打开 `/srv/c156/config.env`，按错误处理：**
+**打开 setup 输出的 config.env，按错误处理（deploy 用户默认 /home/deploy/c156）：**
 
 | 看到什么 | 怎么改 |
 | --- | --- |
 | `set your real SITE_DOMAIN first`／`invalid SITE_DOMAIN` | 填真实域名，例如 `docs.example.cn`，不带协议、斜杠、引号或空格 |
 | `unknown config key`／`config must use KEY=value` | 对照交付的 config.env.example；一行一个 KEY=value，不写 shell 命令 |
-| `DEPLOY_ROOT differs`／bind source path does not exist | 本手册统一 /srv/c156；GitHub、config.env 和命令里的路径要一致，先跑 setup |
+| `DEPLOY_ROOT differs`／bind source path does not exist | 默认用部署用户的家目录/c156；setup 自动写实际路径。自定义时 GitHub、config.env 和命令路径须一致 |
 | `port … is occupied`／`address already in use` | 选择未使用的高位端口，修改 APP_PORT，不停其他服务 |
 | `invalid APP_PORT` | 只填 1024～65535 内的整数，例如 `28157` |
 | `address pool overlaps` | 让维护者选一个未被 Docker 占用的私有 IPv4 网段，修改 PROXY_NETWORK；配置会同时传给 Compose 与后端 |
@@ -87,21 +84,20 @@ ss -H -ltn 'sport = :28157'
 | DNS、连接超时 | 核对实际公网 registry 域名和服务器网络；仅 VPC 可达的地址不能直接给 GitHub runner 使用 |
 | `manifest unknown`／不支持媒体类型 | 维护者查看 push 日志及镜像 digest；保持单平台 amd64、关闭 provenance/SBOM，不手改 release.env |
 
-**修好后：** 私有仓库登录需显示 `Login Succeeded`；公开仓库匿名拉取时无需登录。prepare 失败时，由维护者重新准备发布，直到三个 job 变绿，再确认 `/srv/c156/prepared/compose.yaml` 存在。
+**修好后：** 私有仓库登录需显示 `Login Succeeded`；公开仓库匿名拉取时无需登录。prepare 失败时，由维护者重新准备发布，直到三个 job 变绿，再确认 `/home/deploy/c156/prepared/compose.yaml` 存在。
 
 <a id="e05"></a>
 
 ## E05：Actions 的 SSH 或文件传输失败
 
-创建／查看专用部署钥匙和生成 KNOWN_HOSTS，见 [SSH 操作步骤](SSH.md)。这部分交给维护者处理，朋友提供 Actions 失败日志即可。
+创建／查看专用部署钥匙，见 [SSH 操作步骤](SSH.md)。这部分交给维护者处理，朋友提供 Actions 失败日志即可。
 
 | 报错 | 维护者检查 |
 | --- | --- |
 | `Permission denied (publickey)` | Repository 中本次目标的 TEST_DEPLOY_USER／TEST_DEPLOY_SSH_KEY 或 PROD_ 对应项，以及公钥是否装在该账号 authorized_keys |
-| `Host key verification failed` | 核对服务器指纹及 DEPLOY_KNOWN_HOSTS；非 22 端口用 `[host]:port`，不关闭主机校验 |
 | `Connection timed out`／`refused` | 对应 TEST_DEPLOY_HOST／PROD_DEPLOY_HOST Secret、端口 Variable、SSH 服务、安全组和防火墙 |
 | rsync `command not found` | runner 与服务器均需要 rsync，服务器管理员补齐 |
-| mkdir `Permission denied`／`No such file` | 先让朋友完成 setup，确认 /srv/c156/releases 存在且 DEPLOY_USER 可写 |
+| mkdir `Permission denied`／`No such file` | 先让朋友完成 setup，确认 /home/deploy/c156/releases 存在且 DEPLOY_USER 可写 |
 
 **修好后：** 重新运行相应 workflow。不要改成服务器 `git pull` 来绕过传输错误。
 
@@ -123,10 +119,10 @@ ss -H -ltn 'sport = :28157'
 | images 构建或冒烟红了 | 维护者查看构建／容器日志；认证与拉取问题查 [E04](#e04) |
 | deploy 的 SSH／rsync 红了 | 查 [E05](#e05) |
 | deploy 的数据库／Nginx／健康／HTTPS 检查红了 | 按日志关键词查 [E07](#e07)、[E08](#e08)、[E10](#e10)、[E09](#e09) |
-| 三个 job 绿了，但没有 prepared | 确认该次勾选 prepare_only、target_environment 选对服务器，并核对该目标的 TEST_DEPLOY_ROOT 或 PROD_DEPLOY_ROOT 为 /srv/c156 |
+| 三个 job 绿了，但没有 prepared | 确认该次勾选 prepare_only、target_environment 选对服务器，并核对该目标的实际目录；未配置 DEPLOY_ROOT 时为 SSH 用户家目录/c156 |
 | 正式发布时提示数据库缺失 | 第 4 步尚未完成；新库先显式初始化，已有库不要重建 |
 
-**准备阶段的成功标志：** 日志有 `Release prepared`，服务器有 `/srv/c156/prepared/compose.yaml`。
+**准备阶段的成功标志：** 日志有 `Release prepared`，服务器有 `/home/deploy/c156/prepared/compose.yaml`。
 
 **正式发布的成功标志：** 日志最后有 `Deployed …`，两个 HTTPS 检查返回同一个 SHA。绿色 prepare 不代表网站已经上线。
 
@@ -147,7 +143,7 @@ ss -H -ltn 'sport = :28157'
 **仅当新库已创建、首个管理员尚未创建时，在服务器运行：**
 
 ```bash
-bash -c 'source /srv/c156/prepared/common.sh; load_config /srv/c156; compose_for /srv/c156/prepared run --rm --no-deps backend python -m src.identity bootstrap-admin --database /data/c156.sqlite --login-name admin --display-name 管理员'
+bash -c 'source "$HOME/c156/prepared/common.sh"; load_config "$HOME/c156"; compose_for "$HOME/c156/prepared" run --rm --no-deps backend python -m src.identity bootstrap-admin --database /data/c156.sqlite --login-name admin --display-name 管理员'
 ```
 
 输入两次网站密码，命令成功结束后继续手册第 5 步。引导会拒绝改写已有账号。
@@ -162,7 +158,7 @@ bash -c 'source /srv/c156/prepared/common.sh; load_config /srv/c156; compose_for
 | --- | --- |
 | `nginx binary not found` | 在面板确认真实 Nginx binary 路径，填写 config.env 的 NGINX_BIN |
 | `duplicate location`／`duplicate proxy_pass` | 只保留一个 location /，其中只用一套代理设置；include 与面板生成的 proxy_pass 不同时保留 |
-| include 文件不存在 | 确认 setup 成功，并且 /srv/c156/nginx/proxy.inc 存在；不要直接 include 模板 |
+| include 文件不存在 | 确认 setup 成功，并且 /home/deploy/c156/nginx/proxy.inc 存在；不要直接 include 模板 |
 | nginx -t 的文件名和行号报错 | 打开该配置定位到对应行，修好后让面板重新校验；不跳过 -t |
 | reload `Permission denied` | DEPLOY_USER 需要操作该 Nginx；请管理员处理权限，并确认它使用的是面板同一配置 |
 
@@ -201,12 +197,12 @@ curl -Iv --connect-timeout 5 --max-time 15 https://YOUR_DOMAIN
 **先在服务器同一个终端复制运行这一段：**
 
 ```bash
-C156_RELEASE=/srv/c156/current
+C156_RELEASE="$HOME/c156/current"
 if [ ! -f "$C156_RELEASE/release.env" ]; then
-  C156_RELEASE=/srv/c156/prepared
+  C156_RELEASE="$HOME/c156/prepared"
 fi
 source "$C156_RELEASE/common.sh"
-load_config /srv/c156
+load_config "$HOME/c156"
 compose_for "$C156_RELEASE" ps
 compose_for "$C156_RELEASE" logs --tail 100 backend frontend
 ```
@@ -223,7 +219,7 @@ compose_for "$C156_RELEASE" logs --tail 100 backend frontend
 | `exec format error` | 维护者核对主机架构与 amd64 镜像匹配 |
 | 其他应用异常 | 把 backend 日志交给维护者，不只是重启 Nginx |
 
-如果 current/prepared 都不存在，或要查看某次失败候选，找 Actions 日志中的 `/srv/c156/releases/…` 完整路径，用它替换第一行的 C156_RELEASE，并删掉自动切换 prepared 的 if 段。current 代表成功版本，可能已经回退，因此它的日志不一定包含候选失败原因。
+如果 current/prepared 都不存在，或要查看某次失败候选，找 Actions 日志中的 `/home/deploy/c156/releases/…` 完整路径，用它替换第一行的 C156_RELEASE，并删掉自动切换 prepared 的 if 段。current 代表成功版本，可能已经回退，因此它的日志不一定包含候选失败原因。
 
 <a id="e11"></a>
 
@@ -276,8 +272,8 @@ curl -fsS https://YOUR_DOMAIN/api/healthz
 检查空间：
 
 ```bash
-df -h /srv/c156
-du -sh /srv/c156/data /srv/c156/assets /srv/c156/backups /srv/c156/releases
+df -h "$HOME/c156"
+du -sh "$HOME/c156/data" "$HOME/c156/assets" "$HOME/c156/backups" "$HOME/c156/releases"
 ```
 
 **正常结果：** 文件系统有可用空间；查清占用后再清理。源码和备份不会自动删除。
@@ -285,7 +281,7 @@ du -sh /srv/c156/data /srv/c156/assets /srv/c156/backups /srv/c156/releases
 回退命令：
 
 ```bash
-bash /srv/c156/current/rollback.sh /srv/c156
+bash "$HOME/c156/current/rollback.sh" "$HOME/c156"
 ```
 
 成功后显示 Deployed，并重新通过 HTTPS 版本检查。数据库和资产保持当前内容。
