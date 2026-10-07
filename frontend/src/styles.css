@@ -34,7 +34,7 @@ button:disabled { cursor: default; }
 .markdown-editor .cm-selectionBackground, .markdown-editor .cm-focused .cm-selectionBackground { background: #d8eade; }
 .markdown-editor .cm-scroller { overflow: auto; }
 .markdown-editor.is-readonly { background: #fafbf8; }
-.cm-md-heading { font-weight: 650; margin-top: 12px; margin-bottom: 10px; line-height: 1.5; }
+.markdown-editor .cm-line.cm-md-heading { font-weight: 650; padding-top: 8px; padding-bottom: 6px; line-height: 1.5; }
 .cm-md-h1 { font-size: 28px; } .cm-md-h2 { font-size: 23px; } .cm-md-h3 { font-size: 19px; }
 .cm-md-strong { font-weight: 700; } .cm-md-em { font-style: italic; } .cm-md-strike { text-decoration: line-through; }
 .cm-md-code { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; background: #edf1eb; border-radius: 3px; font-size: .9em; }
