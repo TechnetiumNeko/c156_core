@@ -27,7 +27,7 @@
 | 现象 | 怎么处理 |
 | --- | --- |
 | git: command not found | 让服务器管理员安装 Git，再克隆 |
-| GitHub 连接超时 | 确认服务器能访问 GitHub，恢复网络后重试；后续自动更新也需要服务器能够访问 GitHub |
+| GitHub 连接超时 | 安装命令及自动 fetch 最多重试 3 次，每次 90 秒；全部失败时确认服务器能访问 GitHub，恢复网络后重试；后续自动更新也需要服务器能够访问 GitHub |
 | destination path already exists | 如果目录内已有 .git 和 deploy/setup.sh，不重复 clone；首次安装前按手册第 1 步安全更新 main。若含其他项目，不删除，交给维护者确认目录 |
 | 已克隆但没有 deploy/setup.sh | 确认上游 main 已合并部署代码，克隆了正确仓库；不要只下载一个脚本 |
 
@@ -105,7 +105,7 @@ ss -H -ltn 'sport = :28157'
 | --- | --- |
 | `Permission denied (publickey)` | Repository 中本次目标的 TEST_DEPLOY_USER／TEST_DEPLOY_SSH_KEY 或 PROD_ 对应项，以及公钥是否装在该账号 authorized_keys |
 | `Connection timed out`／`refused` | 对应 TEST_DEPLOY_HOST／PROD_DEPLOY_HOST Secret、端口 Variable、SSH 服务、安全组和防火墙 |
-| git fetch 连接失败 | 服务器需能访问 GitHub；检查 DNS 和网络后重试 |
+| git fetch 连接失败 | 脚本会尝试 3 次，每次限时 90 秒、间隔 5 秒；全部失败再检查服务器 DNS 和 GitHub 网络 |
 | `tracked files have local changes` | 运行 git status，交给维护者保存并处理本地修改；不执行 git reset --hard |
 | mkdir `Permission denied`／`No such file` | 先让朋友完成 setup，确认 /home/deploy/c156 是克隆的仓库且 DEPLOY_USER 可写 |
 
@@ -146,7 +146,7 @@ ss -H -ltn 'sport = :28157'
 | --- | --- |
 | `images.env missing` | 返回手册第 3 步，先成功运行 prepare |
 | `database already exists; refusing initialization` | 已有库，不能再次 --init-db；不要删除。确认是否只是管理员创建中断 |
-| 两次密码不一致／不符合密码要求 | 库可能已创建，按下面命令单独重试管理员引导 |
+| 两次密码不一致／密码不足 15 字符或超过 128 字符 | 库可能已创建，按下面命令单独重试管理员引导 |
 | `bootstrap requires an empty unowned library` | 库中已有账号或 owner；停止引导，使用已有账号，必要时让维护者处理账号恢复 |
 | 数据库版本或 schema 错误 | 先备份现有数据，让维护者核对版本；不靠 init 自动升级 |
 
@@ -156,7 +156,7 @@ ss -H -ltn 'sport = :28157'
 bash -c 'source "$HOME/c156/deploy/common.sh"; load_config "$HOME/c156"; compose_for "$HOME/c156" run --rm --no-deps backend python -m src.identity bootstrap-admin --database /data/c156.sqlite --login-name admin --display-name 管理员'
 ```
 
-输入两次网站密码，命令成功结束后继续手册第 5 步。引导会拒绝改写已有账号。
+输入两次 15～128 字符的网站密码，命令成功结束后继续手册第 5 步。引导会拒绝改写已有账号。
 
 如果已经导入旧库，不要运行新库引导，联系维护者确认已有账号和数据是否可用。
 
@@ -170,7 +170,7 @@ bash -c 'source "$HOME/c156/deploy/common.sh"; load_config "$HOME/c156"; compose
 | `duplicate location`／`duplicate proxy_pass` | 只保留一个 location /，其中只用一套代理设置；include 与面板生成的 proxy_pass 不同时保留 |
 | include 文件不存在 | 确认 setup 成功，并且 /home/deploy/c156/nginx/proxy.inc 存在；不要直接 include 模板 |
 | nginx -t 的文件名和行号报错 | 打开该配置定位到对应行，修好后让面板重新校验；不跳过 -t |
-| reload `Permission denied` | DEPLOY_USER 需要操作该 Nginx；请管理员处理权限，并确认它使用的是面板同一配置 |
+| reload `Permission denied` | 推荐 config.env 设置 NGINX_MANAGED=0，由管理员运行 sudo nginx -t 与 sudo systemctl reload nginx，或通过面板重载；正式发布无需给 deploy 账号 sudo 权限 |
 
 面板不允许这种 include 接法时，改用手册的[面板自管代理](README.md#panel-proxy)。不要替换整个站点配置，保留证书与 ACME location。
 
@@ -192,13 +192,14 @@ curl -Iv --connect-timeout 5 --max-time 15 https://YOUR_DOMAIN
 | 现象 | 检查 |
 | --- | --- |
 | DNS 无结果／指向旧 IP | 修域名 A 记录，等解析更新后再查 |
+| Certbot secondary validation 出现 SERVFAIL | 检查域名权威 DNS／DNSSEC、NS 配置是否一致；修复 DNS 后重试申请，不是应用容器故障，也不通过关闭 TLS 处理 |
 | 连接超时或 refused | 检查 80/443 的安全组、主机防火墙和面板监听 |
 | 浏览器证书警告／curl certificate 错误 | 面板证书是否包含该域名、是否过期、证书链是否完整 |
 | 访问到其他网站／出现 HTTP 跳转循环 | 检查面板域名绑定及 HTTPS 跳转规则 |
 | `public HTTPS … check failed` | 不加 `-k` 绕过证书；修复证书、域名或代理，再重新发布 |
 | 证书过期 | 在面板续签并确认自动续签任务、ACME 验证入口、DNS 和 80/443 正常 |
 
-项目不另起 Certbot。证书刚申请成功也要确认后续续签由谁执行。
+Ubuntu 手动入口用 Certbot 管理证书，运行 `sudo certbot renew --dry-run` 并确认续签 timer；面板入口沿用面板自动续签。证书刚申请成功也要确认后续续签由谁执行。
 
 <a id="e10"></a>
 
@@ -225,6 +226,8 @@ compose_for "$PWD" logs --tail 100 backend frontend
 | frontend healthy，但公网 502 | [E08](#e08)，核对面板代理目标与 APP_PORT 一致 |
 | `exec format error` | 维护者核对主机架构与 amd64 镜像匹配 |
 | 其他应用异常 | 把 backend 日志交给维护者，不只是重启 Nginx |
+
+正式发布在容器健康后最多轮询 90 秒，每隔 5 秒检查本机和公网前端/API 同 SHA。`health polling timed out` 时按最后一个 Waiting URL 定位：本机查容器，公网查 DNS、证书或代理；不自动回退。
 
 images.env 记录最近一次尝试的镜像，发布失败时容器可能仍在运行旧镜像；结合 Actions 日志及两个 HTTPS SHA 判断现场。
 

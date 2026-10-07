@@ -56,3 +56,41 @@ check_environment() {
   docker compose version >/dev/null
   if [[ $NGINX_MANAGED == 1 ]]; then command -v "$NGINX_BIN" >/dev/null || fail 'nginx binary not found; set NGINX_BIN'; fi
 }
+
+# A release check only: both frontend and API must report the tested SHA.
+# Defaults are deliberately fixed by deploy.sh; shorter bounds also allow local checks.
+poll_deployment_health() {
+  local sha=$1 local_base=$2 public_base=$3 duration=${4:-90} interval=${5:-5}
+  local deadline=$((SECONDS + duration)) base path expected body remaining request_timeout failed pause
+  while (( SECONDS < deadline )); do
+    failed=
+    for base in "$local_base" "$public_base"; do
+      for path in /build-info.json /api/healthz; do
+        remaining=$((deadline - SECONDS))
+        (( remaining > 0 )) || return 1
+        request_timeout=$remaining
+        (( request_timeout <= 5 )) || request_timeout=5
+        expected="{\"build_sha\":\"$sha\"}"
+        if [[ $path == /api/healthz ]]; then expected="{\"status\":\"ok\",\"build_sha\":\"$sha\"}"; fi
+        if body=$(curl --fail --silent --show-error --connect-timeout "$request_timeout" --max-time "$request_timeout" -H "Host: $SITE_DOMAIN" "$base$path" < /dev/null); then
+          body=$(printf '%s' "$body" | tr -d '[:space:]')
+          if [[ $body == "$expected" ]]; then continue; fi
+        fi
+        failed="$base$path"
+        break
+      done
+      [[ -z $failed ]] || break
+    done
+    if [[ -z $failed ]]; then
+      printf 'Health verified: local and public frontend/API match %s\n' "$sha"
+      return 0
+    fi
+    remaining=$((deadline - SECONDS))
+    (( remaining > 0 )) || break
+    pause=$interval
+    (( pause <= remaining )) || pause=$remaining
+    printf 'Waiting for %s to report %s; retry in %ss (%ss remaining)\n' "$failed" "$sha" "$pause" "$remaining" >&2
+    sleep "$pause"
+  done
+  return 1
+}

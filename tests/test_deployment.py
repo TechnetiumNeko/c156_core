@@ -1,6 +1,9 @@
 """Actual deployment entrypoints and local Git remotes; no replacement tools."""
 from pathlib import Path
 import os
+import json
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import threading
 import subprocess
 from tempfile import TemporaryDirectory
 import unittest
@@ -71,6 +74,40 @@ class DeploymentPreflightTest(unittest.TestCase):
             self.assertEqual((root / 'data/c156.sqlite').read_bytes(), b'keep')
             self.assertTrue((root / 'config.env').is_file())
 
+    def test_fetch_recovers_when_real_remote_becomes_available(self):
+        with TemporaryDirectory() as directory:
+            remote, root = self.checkout_fixture(directory)
+            sha = self.git(remote, 'rev-parse', 'HEAD')
+            offline = remote.with_name('offline')
+            remote.rename(offline)
+            process = subprocess.Popen(['bash', '-s', '--', str(root), sha,
+                                        'registry.example.com/app@sha256:' + 'a' * 64,
+                                        'registry.example.com/app@sha256:' + 'a' * 64,
+                                        '1', '--prepare'], stdin=subprocess.PIPE,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            try:
+                # Restore only after the real entrypoint reports its first failure.
+                process.stdin.write(SCRIPT.read_text())
+                process.stdin.close()
+                process.stdin = None
+                stderr_prefix = ''
+                for line in process.stderr:
+                    stderr_prefix += line
+                    if 'Fetch failed; retrying in 5s' in line:
+                        break
+                self.assertIn('Fetch failed; retrying in 5s', stderr_prefix)
+                offline.rename(remote)
+                stdout, stderr = process.communicate(timeout=20)
+                stderr = stderr_prefix + stderr
+                self.assertIn('attempt 2/3', stdout)
+                self.assertIn('set your real SITE_DOMAIN first', stderr)
+                self.assertEqual(self.git(root, 'rev-parse', 'HEAD'), sha)
+                self.assertEqual((root / 'data/c156.sqlite').read_bytes(), b'keep')
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.communicate()
+
     def test_local_source_changes_are_preserved(self):
         with TemporaryDirectory() as directory:
             _, root = self.checkout_fixture(directory)
@@ -119,3 +156,56 @@ class DeploymentPreflightTest(unittest.TestCase):
             expected_gid = os.getgid() if os.getuid() else 10001
             self.assertIn(f'APP_UID={expected_uid}\n', config.read_text())
             self.assertIn(f'APP_GID={expected_gid}\n', config.read_text())
+
+
+class DeploymentHealthTest(unittest.TestCase):
+    def check_health(self, recover):
+        sha = 'a' * 40
+        seen = []
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen.append((self.server.server_port, self.path))
+                payload = {'build_sha': sha}
+                if self.path == '/api/healthz':
+                    payload = {'status': 'ok', 'build_sha': sha}
+                if self.server is public and (not recover or len([x for x in seen if x[0] == public.server_port]) == 1):
+                    payload['build_sha'] = 'b' * 40
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(json.dumps(payload).encode())
+            def log_message(self, *args):
+                pass
+        local = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        public = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        servers = (local, public)
+        workers = [threading.Thread(target=server.serve_forever) for server in servers]
+        for worker in workers:
+            worker.start()
+        try:
+            result = subprocess.run(['bash', '-c',
+                'source "$1"; SITE_DOMAIN=docs.example.com; poll_deployment_health "$2" "$3" "$4" 3 1',
+                'health', str(SCRIPT.with_name('common.sh')), sha,
+                f'http://127.0.0.1:{local.server_port}', f'http://127.0.0.1:{public.server_port}'],
+                capture_output=True, text=True, timeout=10,
+                env={**os.environ, "NO_PROXY": "127.0.0.1", "no_proxy": "127.0.0.1"})
+            return result, seen, public.server_port
+        finally:
+            for server in servers:
+                server.shutdown()
+                server.server_close()
+            for worker in workers:
+                worker.join()
+
+    def test_poll_waits_for_public_sha_then_checks_all_four_endpoints(self):
+        result, seen, public_port = self.check_health(recover=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('retry in 1s', result.stderr)
+        self.assertIn('local and public frontend/API match', result.stdout)
+        self.assertIn((public_port, '/api/healthz'), seen)
+        self.assertGreaterEqual(len(seen), 7)
+
+    def test_old_public_sha_times_out_even_when_local_sha_matches(self):
+        result, seen, public_port = self.check_health(recover=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn('Health verified', result.stdout)
+        self.assertGreaterEqual(sum(port == public_port for port, _ in seen), 2)
