@@ -18,6 +18,11 @@ def main():
         root = Path(directory)
         for name in ('data', 'assets', 'backups'):
             (root / name).mkdir(mode=0o700)
+        rootless = 'rootless' in subprocess.check_output(['docker', 'info', '--format', '{{json .SecurityOptions}}'], text=True)
+        if rootless:
+            # Disposable fixture only: rootless UID mapping differs from host UID.
+            for name in ('data', 'assets', 'backups'):
+                (root / name).chmod(0o777)
         with socket.socket() as sock:
             sock.bind(('127.0.0.1', 0))
             port = sock.getsockname()[1]
