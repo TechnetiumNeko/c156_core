@@ -102,6 +102,7 @@ python run_web.py --database data/c156.sqlite --port 8000
 | 虚拟目录、路径与访问范围 | [文件系统](docs/文件系统.md) |
 | 数据库协议与旧数据导入 | [文件格式](docs/文件格式.md) |
 | 产品目标与后续协作设计 | [需求整理](docs/requirements.md)、[协作与版本设计](docs/协作与版本设计.md) |
+| 总体开发顺序与 P0/P1 准备 | [架构与开发路线图](docs/架构与开发路线图.md)、[版本与恢复](docs/版本与恢复/README.md) |
 | 身份、授权与实时协作的边界 | [架构分层](docs/架构分层.md)、[协作与版本设计](docs/协作与版本设计.md) |
 | 内核及 HTTP 的详细契约 | [内核设计](docs/superpowers/specs/2026-09-30-single-sqlite-content-kernel-design.md)、[工作台设计](docs/superpowers/specs/2026-09-30-web-document-workbench-design.md) |
 
