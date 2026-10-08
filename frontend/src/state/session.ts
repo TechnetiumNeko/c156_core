@@ -1,7 +1,10 @@
 import { ApiClient, ApiError } from '../api/client.ts';
 import type { Bootstrap, Node, Access, User } from '../api/types.ts';
 import { EditorState } from './editor.ts';
+export interface SessionLifecycle { beforeLeaveIdentity(): Promise<void> }
 export class SessionState {
+    scope: { workspace_id: string; branch_id: string } | null = null;
+    private lifecycle?: SessionLifecycle;
     user: User | null = null;
     workspaceRole: string | null = null;
     root: Node | null = null;
@@ -13,11 +16,13 @@ export class SessionState {
     private pending: Bootstrap | null = null;
     private client: ApiClient;
     private editor: EditorState;
-    constructor(client: ApiClient, editor: EditorState) {
+    constructor(client: ApiClient, editor: EditorState, lifecycle?: SessionLifecycle) {
+        this.lifecycle = lifecycle;
         this.client = client;
         this.editor = editor;
     }
     private reset() {
+        this.scope = null;
         this.user = null;
         this.workspaceRole = null;
         this.root = null;
@@ -39,6 +44,7 @@ export class SessionState {
             this.pending = value;
             return false;
         }
+        this.scope = value.scope;
         this.user = value.user;
         this.workspaceRole = value.workspace_role;
         this.root = value.root;
@@ -78,9 +84,14 @@ export class SessionState {
         const value = await this.anonymousBootstrap();
         if (epoch !== this.epoch)
             return false;
+        if (!('nonce' in value) && (this.editor.owner ?? this.editor.identity) && (this.editor.owner ?? this.editor.identity) !== value.user.id) {
+            await this.lifecycle?.beforeLeaveIdentity();
+            if (epoch !== this.epoch) return false;
+        }
         return this.accept(value);
     }
     async login(loginName: string, password: string) {
+        await this.lifecycle?.beforeLeaveIdentity();
         const epoch = this.begin();
         this.reset();
         this.editor.setIdentity(null);
@@ -113,6 +124,7 @@ export class SessionState {
         return this.accept(value);
     }
     async logout() {
+        await this.lifecycle?.beforeLeaveIdentity();
         const epoch = this.begin();
         try {
             await this.client.logout();
@@ -126,7 +138,7 @@ export class SessionState {
         if (epoch !== this.epoch)
             return false;
         this.reset();
-        this.editor.setIdentity(null);
+        this.editor.setIdentity(null, { discard: true });
         this.client.invalidate();
         const value = await this.anonymousBootstrap();
         if (epoch !== this.epoch)

@@ -57,6 +57,14 @@ export class EditorState {
         this.paused = userId === null;
         return true;
     }
+    hideDocument() {
+        this.epoch++; this.selection++; this.saving = null; this.clear();
+    }
+    replaceDocument(snapshot: Document) { this.apply(snapshot); }
+    acceptOperation(snapshot: Document, localContent: string) {
+        this.apply(snapshot);
+        this.draft = normalize(localContent);
+    }
     private clear() {
         this.document = null;
         this.owner = null;

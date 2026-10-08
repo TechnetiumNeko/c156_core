@@ -182,12 +182,12 @@ test('failed anonymous proof recovery after wrong password or logout exposes rec
         editor.setIdentity('alice'); editor.open(doc); editor.edit('kept');
         const session = new SessionState(client, editor);
         await assert.rejects(operation === 'login' ? session.login('alice', 'wrong') : session.logout());
-        assert.equal(session.recoveryNeeded, true); assert.equal(editor.draft, 'kept');
+        assert.equal(session.recoveryNeeded, true); assert.equal(editor.draft, operation === 'logout' ? '' : 'kept');
         assert.equal(editor.paused, true);
         await session.bootstrap();
         assert.equal(session.recoveryNeeded, false); assert.equal(client.nonce, 'recovered');
         await session.login('alice', 'correct');
-        assert.equal(session.user?.id, 'alice'); assert.equal(editor.draft, 'kept');
+        assert.equal(session.user?.id, 'alice'); assert.equal(editor.draft, operation === 'logout' ? '' : 'kept');
     }
 });
 
@@ -209,4 +209,19 @@ test('bootstrap retry after successful foreign login keeps old draft blocked unt
     assert.equal(editor.paused, true); assert.equal(session.user, null);
     assert.equal(session.acceptPending({ discard: true }), true);
     assert.equal((session.user as { id: string } | null)?.id, 'bob'); assert.equal(editor.document, null);
+});
+
+
+test('logout lifecycle drains before hiding content and authenticating logout; failure retains memory', async () => {
+    let finish!: () => void;
+    let fail = false;
+    const calls: string[] = [];
+    const client = new ApiClient(async url => { calls.push(String(url)); return json(String(url).includes('logout') ? { ok: true } : { initialized: true, nonce: 'fresh' }); });
+    client.csrf = 'proof';
+    const editor = new EditorState(); editor.setIdentity('alice'); editor.open(doc); editor.edit('kept');
+    const session = new SessionState(client, editor, { async beforeLeaveIdentity() { if (fail) throw new Error('disk full'); await new Promise<void>(resolve => { finish = resolve; }); } });
+    fail = true; await assert.rejects(session.logout()); assert.equal(editor.draft, 'kept'); assert.deepEqual(calls, []);
+    fail = false; const logout = session.logout();
+    assert.equal(editor.draft, 'kept'); assert.deepEqual(calls, []);
+    finish(); await logout; assert.equal(editor.document, null); assert.equal(editor.draft, ''); assert.deepEqual(calls, ['/api/auth/logout', '/api/bootstrap']);
 });
