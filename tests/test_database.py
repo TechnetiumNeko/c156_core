@@ -53,7 +53,7 @@ class TestConnectionBoundaries(TempPathTestCase):
         with self.assertRaises(SchemaError) as caught:
             with Database(future).transaction():
                 self.fail("未来协议版本不能被打开")
-        self.assertEqual(caught.exception.details.get("actual"), 99)
+        self.assertIn("Alembic revision missing", str(caught.exception))
         self.assertEqual(future.read_bytes(), before)
         with closing(sqlite3.connect(future)) as check:
             self.assertEqual(check.execute("PRAGMA user_version").fetchone()[0], 99)
@@ -135,7 +135,7 @@ class TestConnectionBoundaries(TempPathTestCase):
                 str(connection.execute("PRAGMA journal_mode").fetchone()[0]).lower(),
                 "delete",
             )
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 2)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 3)
         self.assertEqual(path.read_bytes(), before)
 
     def test_configure_runtime_enables_wal(self):
@@ -152,14 +152,14 @@ class TestConnectionBoundaries(TempPathTestCase):
                 "wal",
             )
 
-    def test_create_schema_sets_protocol_version_one(self):
+    def test_create_schema_sets_head_and_legacy_writer_blocker(self):
         path = self.temp_path("version.sqlite")
         path.touch()
         with Database(path).management_connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             create_schema(connection)
             self.assertEqual(
-                connection.execute("PRAGMA user_version").fetchone()[0], 2
+                connection.execute("PRAGMA user_version").fetchone()[0], 3
             )
             connection.execute("COMMIT")
 
@@ -212,14 +212,14 @@ class TestSchemaConstraints(TempPathTestCase):
                 (object_id, workspace_id, kind, T),
             )
         connection.execute(
-            "INSERT INTO document_revisions VALUES ('r1','w1','d',NULL,'',?)", (T,)
+            "INSERT INTO document_revisions (id,workspace_id,object_id,parent_revision_id,content,created_at) VALUES ('r1','w1','d',NULL,'',?)", (T,)
         )
         connection.execute(
-            "INSERT INTO document_revisions VALUES ('r2','w1','other',NULL,'',?)",
+            "INSERT INTO document_revisions (id,workspace_id,object_id,parent_revision_id,content,created_at) VALUES ('r2','w1','other',NULL,'',?)",
             (T,),
         )
         connection.execute(
-            "INSERT INTO document_revisions VALUES ('r3','w2','y',NULL,'',?)", (T,)
+            "INSERT INTO document_revisions (id,workspace_id,object_id,parent_revision_id,content,created_at) VALUES ('r3','w2','y',NULL,'',?)", (T,)
         )
         connection.execute(
             "INSERT INTO branches VALUES ('b1','w1','main','root',?)", (T,)

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Iterator
 
 from .errors import BusyError, ConstraintError, SchemaError, StorageError
-from .schema import SCHEMA_VERSION
+from .migrations import validate_schema
 
 __all__ = ["Database"]
 
@@ -92,22 +92,7 @@ class Database:
     def _require_runtime(self, connection: sqlite3.Connection) -> None:
         """Reject empty, future-version or non-WAL targets without modifying them."""
 
-        try:
-            version = connection.execute("PRAGMA user_version").fetchone()[0]
-        except sqlite3.DatabaseError as exc:
-            raise SchemaError(
-                "database file is not a usable content database",
-                details={"path": str(self.path)},
-            ) from exc
-        if version != SCHEMA_VERSION:
-            raise SchemaError(
-                "unsupported database protocol version; initialize a new database path",
-                details={
-                    "expected": SCHEMA_VERSION,
-                    "actual": version,
-                    "path": str(self.path),
-                },
-            )
+        validate_schema(connection)
         try:
             journal_mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
         except sqlite3.DatabaseError as exc:  # pragma: no cover - defensive
@@ -184,25 +169,7 @@ class Database:
         """Validate the protocol and enable WAL for an existing database."""
 
         with self.management_connection() as connection:
-            try:
-                version = connection.execute("PRAGMA user_version").fetchone()[0]
-            except sqlite3.DatabaseError as exc:
-                translated = _translate(exc)
-                if isinstance(translated, BusyError):
-                    raise translated from exc
-                raise SchemaError(
-                    "database file is not a usable content database",
-                    details={"path": str(self.path)},
-                ) from exc
-            if version != SCHEMA_VERSION:
-                raise SchemaError(
-                    "unsupported database protocol version; initialize a new database path",
-                    details={
-                        "expected": SCHEMA_VERSION,
-                        "actual": version,
-                        "path": str(self.path),
-                    },
-                )
+            validate_schema(connection)
             current = connection.execute("PRAGMA journal_mode").fetchone()[0]
             if str(current).lower() == "wal":
                 return

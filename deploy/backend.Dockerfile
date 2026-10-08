@@ -4,6 +4,8 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 COPY src ./src
+COPY alembic.ini ./alembic.ini
+COPY migrations ./migrations
 ARG BUILD_SHA=dev
 ENV BUILD_SHA=${BUILD_SHA}
 LABEL org.opencontainers.image.revision=${BUILD_SHA}

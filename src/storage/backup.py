@@ -5,7 +5,7 @@ import os
 import sqlite3
 import tempfile
 
-from .schema import SCHEMA_VERSION
+from .migrations import validate_backup_schema
 from .publication import publish_no_replace
 
 
@@ -23,10 +23,7 @@ def backup_database(source: Path, target: Path) -> Path:
         temporary = Path(name)
         with closing(sqlite3.connect(temporary)) as snapshot:
             connection.backup(snapshot)
-            if snapshot.execute('PRAGMA user_version').fetchone()[0] != SCHEMA_VERSION:
-                raise ValueError('unsupported snapshot schema')
-            if snapshot.execute('PRAGMA integrity_check').fetchall() != [('ok',)]:
-                raise ValueError('snapshot integrity check failed')
+            validate_backup_schema(snapshot)
             snapshot.execute('PRAGMA journal_mode=DELETE')
         publish_no_replace(temporary, target)
         return target

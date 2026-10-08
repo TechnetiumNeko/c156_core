@@ -41,6 +41,20 @@ class StorageCommandTests(TempPathTestCase):
                 1,
             )
 
+    def test_upgrade_command_builds_empty_database_and_rejects_unknown(self):
+        from src.storage import validate_schema
+        from src.storage.migrations import HEAD_REVISION
+        path = self.temp_path()
+        path.touch()
+        self.assertEqual(main(["upgrade", "--database", str(path)]), 0)
+        with Database(path).management_connection() as connection:
+            self.assertEqual(validate_schema(connection), HEAD_REVISION)
+            connection.execute("UPDATE alembic_version SET version_num='future'")
+        before = path.read_bytes()
+        with redirect_stderr(io.StringIO()):
+            self.assertEqual(main(["upgrade", "--database", str(path)]), 1)
+        self.assertEqual(path.read_bytes(), before)
+
     def test_init_failure_is_nonzero_without_success_output(self) -> None:
         path = self.temp_path("empty.sqlite")
         path.touch()

@@ -43,7 +43,7 @@ from .database import Database
 from .errors import BusyError, StorageError
 from .management import DEFAULT_TOP_LEVEL_NAMES, validate_default_tree
 from .publication import publish_no_replace
-from .records import EntryRecord, RevisionRecord
+from .records import EntryRecord
 from .repository import (
     Repository,
     get_import_report,
@@ -52,7 +52,8 @@ from .repository import (
     insert_workspace,
     verify_integrity,
 )
-from .schema import SCHEMA_VERSION, create_schema
+from .schema import create_schema
+from .migrations import validate_schema
 
 __all__ = [
     "LegacyObject",
@@ -1102,15 +1103,12 @@ def _populate(
             continue
         revision_id = str(uuid.uuid4())
         revision_ids[item.id] = revision_id
-        repo.insert_revision(
-            RevisionRecord(
-                id=revision_id,
-                workspace_id=workspace_id,
-                object_id=item.id,
-                parent_revision_id=None,
-                content=item.content if item.content is not None else "",
-                created_at=imported_at,
-            )
+        connection.execute(
+            "INSERT INTO document_revisions "
+            "(id,workspace_id,object_id,parent_revision_id,content,created_at,source_kind) "
+            "VALUES (?,?,?,NULL,?,?, 'import')",
+            (revision_id, workspace_id, item.id,
+             item.content if item.content is not None else "", imported_at),
         )
     for item in scan.objects:
         repo.insert_entry(
@@ -1373,12 +1371,12 @@ def _load_matching_report(target: Path, source_digest: str) -> dict | None:
             report = get_import_report(connection, source_digest)
             if report is None:
                 return None
-            version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if version != SCHEMA_VERSION:
-                raise UnsupportedSchema(
-                    "unsupported database protocol version; initialize at a new path",
-                    details={"expected": SCHEMA_VERSION, "actual": version, "path": str(target)},
-                )
+            try:
+                validate_schema(connection)
+            except StorageError as exc:
+                if isinstance(exc, BusyError):
+                    raise
+                raise UnsupportedSchema(str(exc), details=exc.details) from exc
             verify_integrity(connection)
             validate_default_tree(connection)
         except sqlite3.OperationalError as exc:

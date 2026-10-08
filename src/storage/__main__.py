@@ -1,9 +1,15 @@
 """Thin management command line for the content database.
 
-Only the two explicit management actions live here:
+Explicit management actions live here:
 
 ``python -m src.storage init --database PATH``
     Create (or validate and reconfigure) the default content database.
+
+``python -m src.storage upgrade --database PATH``
+    Verify the source schema and atomically migrate to the supported revision.
+
+``python -m src.storage backup --database PATH --output PATH``
+    Verify and snapshot a supported source without upgrading it.
 
 ``python -m src.storage migrate-legacy --source DIR --database PATH``
     Atomically import a legacy container tree into a new content database.
@@ -23,7 +29,7 @@ from pathlib import Path
 from ..core.errors import ContentError
 from .errors import StorageError
 from .legacy import migrate_legacy
-from .management import initialize_database
+from .management import initialize_database, upgrade_database
 from .backup import backup_database
 
 __all__ = ["build_parser", "main"]
@@ -48,6 +54,8 @@ def build_parser() -> argparse.ArgumentParser:
     migrate_parser.add_argument(
         "--database", required=True, help="target database path"
     )
+    upgrade_parser = subparsers.add_parser('upgrade', help='explicitly upgrade a verified schema')
+    upgrade_parser.add_argument('--database', required=True)
     backup_parser = subparsers.add_parser('backup', help='create a verified online SQLite snapshot')
     backup_parser.add_argument('--database', required=True)
     backup_parser.add_argument('--output', required=True)
@@ -62,6 +70,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "init":
             initialize_database(Path(args.database))
+        elif args.command == 'upgrade':
+            upgrade_database(Path(args.database))
         elif args.command == 'backup':
             backup_database(Path(args.database), Path(args.output))
         else:

@@ -68,7 +68,7 @@ class TestInitializeDatabase(TempPathTestCase):
         self.assertTrue(path.exists())
         self.assertIsInstance(scope, ContentScope)
         with Database(path).management_connection() as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 2)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 3)
             self.assertEqual(
                 str(connection.execute("PRAGMA journal_mode").fetchone()[0]).lower(),
                 "wal",
