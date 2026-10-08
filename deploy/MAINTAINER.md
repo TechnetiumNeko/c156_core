@@ -107,4 +107,4 @@ Compose 的容器 healthcheck 每 10 秒持续执行；发布脚本的本机／�
 
 启动后或健康检查失败时可能已接受新写入。只修复前进；不得据“发布失败”直接覆盖旧快照。只有人工确认从备份到当前始终未重新开放任何写入口，才可在全部服务停止后显式恢复备份，先保留事故数据目录，再用兼容镜像验证。无法证明停写期间没有新稿时，不执行数据回退。
 
-本轮真实 SQLite 管理命令和维护 helper 检查通过；Compose 边界使用本地测试替身，不能证明真实容器行为。本地 Docker daemon socket 权限不足，未做镜像构建、容器 smoke 或远端发布。后端 Dockerfile 的 Alembic 配置与 migrations COPY 已补入 .dockerignore 白名单。
+真实 SQLite 管理命令和维护 helper 的本地检查通过；本地 Compose 边界使用测试替身。随后 GitHub Actions 已完成实际镜像 smoke、容器重建后持久性检查，以及 test 的停写、备份、升级、核验和发布，本机/公网前端及 API 均匹配发布提交；[实际记录](../docs/版本与恢复/执行记录.md)。本地 Docker socket 权限不足的限制不代表远端未验证。prod 未在本轮发布，任意外部写进程停止仍是运维前提。
