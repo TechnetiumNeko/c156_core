@@ -225,6 +225,7 @@ class ContentOperations:
         name: str,
         *,
         content: str = "",
+        actor_id: str | None = None,
     ) -> DocumentSnapshot:
         """Create a document and its first revision under an active parent."""
 
@@ -248,6 +249,8 @@ class ContentOperations:
                 workspace_id=scope.workspace_id,
                 object_id=object_id,
                 parent_revision_id=None,
+                actor_id=actor_id,
+                source_kind="save",
                 content=content,
                 created_at=now,
             )
@@ -289,6 +292,9 @@ class ContentOperations:
         content: str,
         *,
         expected_revision_id: str,
+        actor_id: str | None = None,
+        source_kind: str = "save",
+        restored_from_revision_id: str | None = None,
     ) -> DocumentSnapshot:
         """Append an immutable revision after checking the caller's base.
 
@@ -335,6 +341,9 @@ class ContentOperations:
                 workspace_id=scope.workspace_id,
                 object_id=object_id,
                 parent_revision_id=current_id,
+                actor_id=actor_id,
+                source_kind=source_kind,
+                restored_from_revision_id=restored_from_revision_id,
                 content=content,
                 created_at=now,
             )

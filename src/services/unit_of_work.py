@@ -80,6 +80,13 @@ class _ApplicationTransaction:
             workspace_id=scope.workspace_id, branch_id=scope.branch_id),
             policy=self.policy(scope, principal))
 
+    def history(self, scope, principal):
+        from .history import HistoryOperations
+        self._require_active()
+        return HistoryOperations(Repository(self._connection,
+            workspace_id=scope.workspace_id, branch_id=scope.branch_id),
+            self.policy(scope, principal), self.identity)
+
     def configured_scope(self) -> ContentScope:
         """Locate the fixed display root without validating sibling contents."""
         self._require_active()

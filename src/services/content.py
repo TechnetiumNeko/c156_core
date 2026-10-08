@@ -6,6 +6,7 @@ from ..core.errors import InvalidArgument, Unauthenticated, Forbidden, Conflict
 from ..core.json_values import thaw_json, validate_metadata
 from ..core.paths import parse_path, validate_name
 from .content_operations import ContentOperations
+from .views import RevisionPage, RevisionView, RevisionDiff, DeletedDocumentPage
 
 from ..core.models import ContentScope, DeleteSnapshot, DocumentSnapshot, NodeSnapshot, TreeItem
 from ..storage.database import Database
@@ -125,7 +126,7 @@ class ContentService:
             raise InvalidArgument('invalid visibility')
         if visibility == 'private' and operations._policy.role not in ('editor', 'admin', 'owner'):
             raise Forbidden('private creation requires editor role')
-        node = (operations.create_document(scope, parent_id, name, content=content)
+        node = (operations.create_document(scope, parent_id, name, content=content, actor_id=actor.user_id)
                 if document else operations.create_folder(scope, parent_id, name))
         repo = work.access(scope)
         repo.insert_ownership(OwnershipRecord(scope.workspace_id, node.id, actor.user_id))
@@ -155,6 +156,32 @@ class ContentService:
         with self._read() as work:
             return work.authorized_content(scope, work.resolve_principal(session_token)).read_document(scope, object_id)
 
+    def list_document_revisions(self, scope: ContentScope, object_id: str, *,
+                                cursor: str | None = None, limit: int = 50,
+                                session_token: str | None) -> RevisionPage:
+        with self._read() as work:
+            return work.history(scope, work.resolve_principal(session_token)).list_document_revisions(
+                scope, object_id, cursor=cursor, limit=limit)
+
+    def read_document_revision(self, scope: ContentScope, object_id: str, revision_id: str,
+                               *, session_token: str | None) -> RevisionView:
+        with self._read() as work:
+            return work.history(scope, work.resolve_principal(session_token)).read_document_revision(
+                scope, object_id, revision_id)
+
+    def compare_document_revisions(self, scope: ContentScope, object_id: str,
+                                   from_revision_id: str, to_revision_id: str,
+                                   *, session_token: str | None) -> RevisionDiff:
+        with self._read() as work:
+            return work.history(scope, work.resolve_principal(session_token)).compare_document_revisions(
+                scope, object_id, from_revision_id, to_revision_id)
+
+    def list_deleted_documents(self, scope: ContentScope, *, cursor: str | None = None,
+                               limit: int = 50, session_token: str | None) -> DeletedDocumentPage:
+        with self._read() as work:
+            return work.history(scope, work.resolve_principal(session_token)).list_deleted_documents(
+                scope, cursor=cursor, limit=limit)
+
     def save_document(self, scope: ContentScope, object_id: str, content: str, *, expected_revision_id: str, session_token: str | None) -> DocumentSnapshot:
         return self._save_public(scope, object_id, content, expected_revision_id, session_token)
 
@@ -166,9 +193,9 @@ class ContentService:
         self._require_str(content, "content")
         self._require_str(expected_revision_id, "expected_revision_id")
         with self._write() as work:
-            operations, _ = self._writer(work, scope, token)
+            operations, actor = self._writer(work, scope, token)
             operations.require_write(scope, object_id, 'edit', unfrozen=True)
-            snapshot = operations.save_document(scope, object_id, content, expected_revision_id=expected_revision_id)
+            snapshot = operations.save_document(scope, object_id, content, expected_revision_id=expected_revision_id, actor_id=actor.user_id)
             if with_access:
                 from .views import DocumentAccessView
                 return DocumentAccessView(snapshot, self._access_view(operations, scope, object_id))
