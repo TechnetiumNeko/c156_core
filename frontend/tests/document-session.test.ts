@@ -59,6 +59,11 @@ test('production IndexedDB adapter projects Vue DTOs and fences same-owner clear
     const record = reactive({ ...first, content: 'local', generation: 2, pending: { kind: 'save' as const, request: { operation_id: 'id', object_id: 'doc', expected_revision_id: 'r1', content: 'local' } } });
     await store.write(record, first.fencingToken);
     assert.equal((await store.read(key))?.pending?.request.operation_id, 'id');
+    // An acknowledgement keeps this owner/token but advances generation past old captured pending writes.
+    await store.write({ ...record, generation: 3, content: 'later input', pending: null }, first.fencingToken);
+    await assert.rejects(store.write(record, first.fencingToken), StaleDraftFenceError);
+    assert.equal((await store.read(key))?.pending, null);
+    assert.equal((await store.read(key))?.content, 'later input');
     const cleared = await store.clear(key, first.fencingToken);
     assert.equal(cleared.content, null);
     await assert.rejects(store.write(record, first.fencingToken), StaleDraftFenceError);
