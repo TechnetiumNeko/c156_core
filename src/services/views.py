@@ -1,7 +1,7 @@
 """Detached combinations of public content and access snapshots."""
 from dataclasses import dataclass
 from ..access.models import ContentAccessView
-from ..core.models import NodeSnapshot, DocumentSnapshot
+from ..core.models import NodeSnapshot, DocumentSnapshot, ContentScope
 from ..identity.models import SessionView
 
 @dataclass(frozen=True)
@@ -21,6 +21,7 @@ class BootstrapView:
     workspace_role: str | None
     workspace_access_version: int | None
     root: NodeAccessView | None
+    scope: ContentScope | None = None
 
 @dataclass(frozen=True)
 class RevisionSummary:
@@ -58,3 +59,16 @@ class DeletedDocumentSummary:
 class DeletedDocumentPage:
     documents: tuple[DeletedDocumentSummary, ...]
     next_cursor: str | None
+
+@dataclass(frozen=True)
+class OperationReceipt:
+    operation_id: str
+    operation_type: str
+    result_revision_id: str
+    changed: bool
+    created_at: str
+
+@dataclass(frozen=True)
+class OperationResult:
+    operation: OperationReceipt
+    current_revision_id: str

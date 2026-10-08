@@ -301,3 +301,27 @@ class TestSaveAfterMoveOrDelete(ContentConcurrencyTestCase):
         with self.assertRaises(NotFound):
             service.save_document(self.scope, doc.id, "old buffer", expected_revision_id=doc.revision_id, session_token=self.token)
         self.assertEqual(revision_state(self.fixture.path, doc.id), before)
+
+
+def _operation_worker(database_path, scope, object_id, expected, token, barrier, results):
+    service = ContentService(Database(Path(database_path)))
+    try:
+        barrier.wait(timeout=_BARRIER_TIMEOUT)
+        saved = service.save_document_operation(scope, object_id, 'same fixed request',
+            expected_revision_id=expected, operation_id='shared-operation', session_token=token)
+        results.put({'status': 'ok', 'revision': saved.operation.result_revision_id})
+    except BaseException as exc:
+        results.put({'status': 'error', 'detail': repr(exc)})
+
+
+class TestConcurrentOperation(ContentConcurrencyTestCase):
+    def test_same_operation_in_two_processes_commits_one_revision_and_receipt(self):
+        args = (str(self.fixture.path), self.scope, self.fixture.concretecream_id,
+                self.fixture.concretecream_revision_id)
+        before = table_counts(self.fixture.path)['document_revisions']
+        results = self.run_workers(_operation_worker, [args, args])
+        self.assertEqual([r['status'] for r in results], ['ok', 'ok'], results)
+        self.assertEqual(results[0]['revision'], results[1]['revision'])
+        self.assertEqual(table_counts(self.fixture.path)['document_revisions'], before + 1)
+        with self.fixture.database.transaction() as connection:
+            self.assertEqual(connection.execute('SELECT COUNT(*) FROM document_operations').fetchone()[0], 1)

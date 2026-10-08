@@ -18,6 +18,16 @@ class SaveDocumentBody(StrictBody):
     expected_revision_id: StrictStr
 
 
+class SaveDocumentOperationBody(SaveDocumentBody):
+    operation_id: StrictStr
+
+class RestoreDocumentBody(StrictBody):
+    object_id: StrictStr
+    source_revision_id: StrictStr
+    expected_revision_id: StrictStr
+    operation_id: StrictStr
+
+
 def validate_body(model, value):
     try:
         return model.model_validate(value)

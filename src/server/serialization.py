@@ -43,3 +43,37 @@ def workspace_access_json(access):
     return {'version': access.version, 'read_scope': access.read_scope,
             'members': [{'user': user_json(member.user), 'role': member.role,
                          'status': member.status} for member in access.members]}
+
+
+def operation_result_json(result):
+    if result is None:
+        return {'operation': None}
+    receipt = result.operation
+    return {'operation': {key: getattr(receipt, key) for key in (
+        'operation_id', 'operation_type', 'result_revision_id', 'changed', 'created_at')},
+        'current_revision_id': result.current_revision_id}
+
+
+def revision_json(revision):
+    return {key: getattr(revision, key) for key in (
+        'revision_id', 'parent_revision_id', 'actor_id', 'actor_display_name',
+        'source_kind', 'restored_from_revision_id', 'created_at')}
+
+
+def revision_page_json(page):
+    return {'revisions': [revision_json(revision) for revision in page.revisions],
+            'head_revision_id': page.head_revision_id, 'next_cursor': page.next_cursor}
+
+
+def revision_view_json(revision):
+    return {**revision_json(revision), 'content': revision.content}
+
+
+def revision_diff_json(diff):
+    return {'from_revision_id': diff.from_revision_id, 'to_revision_id': diff.to_revision_id,
+            'diff': diff.diff}
+
+
+def deleted_page_json(page):
+    return {'documents': [{'object_id': doc.object_id, 'name': doc.name, 'path': doc.path}
+                          for doc in page.documents], 'next_cursor': page.next_cursor}

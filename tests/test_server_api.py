@@ -196,3 +196,52 @@ class ServerAPITest(ServerFixture):
             self.assert_error(await self.client.get(path), 400)
         self.assertEqual(self.services.content.read_document(self.scope, self.doc.id,
             session_token=self.token).content, self.doc.content)
+
+    async def test_operations_history_restore_and_retained_projection(self):
+        self.assertEqual(set((await self.client.get('/api/bootstrap')).json()), {'initialized', 'nonce'})
+        doc = await self.content_fixture()
+        boot = (await self.client.get('/api/bootstrap')).json()
+        self.assertEqual(boot['scope'], {'workspace_id': self.scope.workspace_id, 'branch_id': self.scope.branch_id})
+        params = {'object_id': doc.id, 'operation_id': 'save-1'}
+        self.assertEqual((await self.client.get('/api/document/operation', params=params)).json(), {'operation': None})
+        body = {**params, 'content': 'second\n', 'expected_revision_id': doc.revision_id}
+        self.assert_error(await self.client.put('/api/document', json=body), 403)
+        headers = {'X-C156-CSRF': self.csrf}
+        saved = await self.client.put('/api/document', json=body, headers=headers)
+        self.assertEqual(saved.status_code, 200, saved.text)
+        result = saved.json()
+        self.assertEqual(set(result), {'operation', 'current_revision_id'})
+        self.assertEqual(set(result['operation']), {'operation_id', 'operation_type', 'result_revision_id', 'changed', 'created_at'})
+        self.assertTrue(result['operation']['changed'])
+        self.assertEqual((await self.client.put('/api/document', json=body, headers=headers)).json(), result)
+        self.assertEqual((await self.client.get('/api/document/operation', params=params)).json(), result)
+        first = (await self.client.get('/api/document/history', params={'object_id': doc.id, 'limit': 1})).json()
+        self.assertEqual(set(first), {'revisions', 'head_revision_id', 'next_cursor'})
+        self.assertEqual(len(first['revisions']), 1)
+        self.assertEqual(set(first['revisions'][0]), {'revision_id', 'parent_revision_id', 'actor_id', 'actor_display_name', 'source_kind', 'restored_from_revision_id', 'created_at'})
+        last = (await self.client.get('/api/document/history', params={'object_id': doc.id, 'cursor': first['next_cursor']})).json()
+        self.assertEqual(last['revisions'][0]['revision_id'], doc.revision_id)
+        old = (await self.client.get('/api/document/revision', params={'object_id': doc.id, 'revision_id': doc.revision_id})).json()
+        self.assertEqual(set(old), set(first['revisions'][0]) | {'content'})
+        self.assertEqual(old['content'], doc.content)
+        diff = (await self.client.get('/api/document/diff', params={'object_id': doc.id,
+            'from_revision_id': doc.revision_id, 'to_revision_id': result['current_revision_id']})).json()
+        self.assertEqual(set(diff), {'from_revision_id', 'to_revision_id', 'diff'})
+        self.assertIn('+second', diff['diff'])
+        restore_body = {'object_id': doc.id, 'operation_id': 'restore-1',
+            'expected_revision_id': result['current_revision_id'], 'source_revision_id': doc.revision_id}
+        self.assert_error(await self.client.post('/api/document/restore', json=restore_body), 403)
+        restored = await self.client.post('/api/document/restore', json=restore_body, headers=headers)
+        self.assertEqual(restored.status_code, 200, restored.text)
+        self.assertEqual(restored.json()['operation']['operation_type'], 'restore')
+        confirmed = (await self.client.get('/api/document/operation', params=params)).json()
+        self.assertEqual(confirmed['operation'], result['operation'])
+        self.assertEqual(confirmed['current_revision_id'], restored.json()['current_revision_id'])
+        current = self.services.content.read_document(self.scope, doc.id, session_token=self.token)
+        self.services.content.delete_node(self.scope, doc.id, expected_version=current.version, session_token=self.token)
+        retained = (await self.client.get('/api/documents/deleted', params={'limit': 1})).json()
+        self.assertEqual(retained, {'documents': [{'object_id': doc.id, 'name': doc.name, 'path': doc.path}], 'next_cursor': None})
+        self.assertEqual((await self.client.get('/api/document/operation', params=params)).json(), confirmed)
+        self.assert_error(await self.client.post('/api/document/restore', json={**restore_body,
+            'operation_id': 'new'}, headers=headers), 404)
+        self.assert_error(await self.client.get('/api/document', params={'object_id': doc.id}), 404)

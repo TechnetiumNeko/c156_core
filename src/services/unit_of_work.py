@@ -16,6 +16,7 @@ from ..storage.management import validate_default_tree
 from ..storage.identity_repository import IdentityRepository
 from ..storage.access_repository import AccessRepository
 from ..storage.audit_repository import AuditRepository
+from ..storage.operation_repository import OperationRepository
 from ..storage.auth_throttle_repository import AuthThrottleRepository
 from .content_operations import ContentOperations
 
@@ -32,6 +33,7 @@ class _ApplicationTransaction:
         self.clock = lambda: self.now
         self.identity = IdentityRepository(connection)
         self.audit = AuditRepository(connection)
+        self.operations = OperationRepository(connection)
         self.throttles = AuthThrottleRepository(connection)
 
     def _require_active(self) -> None:

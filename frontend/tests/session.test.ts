@@ -7,7 +7,7 @@ import type { Document } from '../src/api/types.ts';
 const node = { id: 'root', kind: 'folder', name: 'Root', parent_id: null, position: 0, version: 1, path: '/', created_at: '', modified_at: '', metadata: {} };
 const access = { version: 1, actions: ['read'], visibility: 'visible', frozen: false, can_freeze: false, can_unfreeze: false };
 const grant = (id: string) => ({ user: { id, login_name: id, display_name: id, status: 'active', site_admin: false, version: 1 }, csrf: id + '-csrf', expires_at: 'date' });
-const bootstrap = (id: string) => ({ initialized: true, ...grant(id), workspace_access_version: 1, workspace_role: 'owner', root: { ...node, id: id + '-root' }, root_access: access });
+const bootstrap = (id: string) => ({ initialized: true, ...grant(id), scope: { workspace_id: 'workspace', branch_id: 'main' }, workspace_access_version: 1, workspace_role: 'owner', root: { ...node, id: id + '-root' }, root_access: access });
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status });
 const doc: Document = { ...node, id: 'doc', kind: 'document', content: 'original', revision_id: 'r1' };
 test('login refreshes root, blocks foreign draft, requires explicit discard', async () => {

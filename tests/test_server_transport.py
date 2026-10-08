@@ -67,3 +67,23 @@ class ServerTransportTest(ServerFixture):
         self.assertNotIn(sentinel, rendered)
         self.assertNotIn(sentinel, '\n'.join(logs.output))
         self.assertEqual([message['type'] for message in messages], ['http.response.start', 'http.response.body'])
+
+    async def test_history_and_operation_fields_remain_strict(self):
+        login = await self.login()
+        headers = {'X-C156-CSRF': login.json()['csrf']}
+        save = {'object_id': 'doc', 'content': '', 'expected_revision_id': 'r1', 'operation_id': 'op'}
+        restore = {'object_id': 'doc', 'source_revision_id': 'r1', 'expected_revision_id': 'r2', 'operation_id': 'op'}
+        for method, path, body in ((self.client.put, '/api/document', save),
+                                   (self.client.post, '/api/document/restore', restore)):
+            for extra in ({'scope': {}}, {'operation_id': None}, {'operation_id': 5}, {'expected_revision_id': False}):
+                self.assert_error(await method(path, json={**body, **extra}, headers=headers), 422)
+            self.assert_error(await method(path + '?unexpected=1', json=body, headers=headers), 400)
+            self.assert_error(await method(path, content='{"operation_id":"a","operation_id":"b"}', headers=headers), 400)
+        for path in ('/api/document/history?object_id=x&limit=1&limit=2',
+                     '/api/document/history?object_id=x&other=1',
+                     '/api/document/history?limit=1', '/api/documents/deleted?object_id=x',
+                     '/api/document/revision?object_id=x', '/api/document/diff?object_id=x',
+                     '/api/document/operation?object_id=x&operation_id=y&operation_id=z'):
+            self.assert_error(await self.client.get(path), 400)
+        for limit in ('0', '-1', '101', '1.0', 'true', '01', ''):
+            self.assert_error(await self.client.get('/api/document/history', params={'object_id': 'x', 'limit': limit}), 400)
