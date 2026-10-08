@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, markRaw, onMounted, onUnmounted, reactive, ref, watch, defineAsyncComponent } from 'vue';
-import { NButton, NAlert, NTag } from 'naive-ui';
+import { NButton, NAlert } from 'naive-ui';
 import { useConfirm } from './composables/useConfirm.ts';
 import { useFileOperations } from './composables/useFileOperations.ts';
 import { errorText } from './composables/errors.ts';
@@ -9,7 +9,10 @@ const AdminUsersPage = defineAsyncComponent(() => import('./pages/AdminUsersPage
 const MembersPage = defineAsyncComponent(() => import('./pages/MembersPage.vue'));
 import FileActions from './components/FileActions.vue';
 import { ApiClient, ApiError } from './api/client.ts';
-import type { Access } from './api/types.ts';
+import { DocumentSession } from './state/document-session.ts';
+import DraftRecovery from './components/DraftRecovery.vue';
+import DocumentHistory from './components/DocumentHistory.vue';
+import DeletedDocuments from './components/DeletedDocuments.vue';
 import { EditorState } from './state/editor.ts';
 import { SessionState } from './state/session.ts';
 import { DirectoryState } from './state/directory.ts';
@@ -20,21 +23,25 @@ const confirm = useConfirm();
 const page = ref<'documents' | 'account' | 'admin' | 'members'>('documents');
 const client = markRaw(new ApiClient());
 const editor = reactive(new EditorState()) as EditorState;
-const session = reactive(new SessionState(client, editor)) as SessionState;
+const documents = reactive(new DocumentSession(client, editor)) as DocumentSession;
+const session = reactive(new SessionState(client, editor, {beforeLeaveIdentity: () => documents.leave()})) as SessionState;
 const directory = reactive(new DirectoryState(client)) as DirectoryState;
 const busy = ref(false); const loadingDocument = ref(false); const loadingLatest = ref(false);
-const message = ref(''); const ready = ref(false); const access = ref<Access | null>(null);
-const blockedSave = ref(false);
+const message = ref(''); const ready = ref(false);
+const access = computed({get: () => documents.access, set: value => {documents.access = value;}});
+const logoutFailed = ref(false); const showHistory = ref(false); const showDeleted = ref(false);
+const localObjectId = ref('');
 const accessRefreshFailed = ref(false); const loadingAccess = ref(false);
-const files = useFileOperations(client, session, directory, editor, select, failure, confirm);
+const files = useFileOperations(client, session, directory, editor, select, failure, confirm, documents);
 const fileBusy = files.busy;
-const navigationBusy = computed(() => busy.value || loadingAccess.value || loadingDocument.value || !!editor.saving || fileBusy.value);
+const navigationBusy = computed(() => busy.value || loadingAccess.value || loadingDocument.value || documents.busy || fileBusy.value);
 const managesWorkspace = computed(() => session.workspaceRole === 'admin' || session.workspaceRole === 'owner');
-watch(() => session.epoch, () => files.reset());
+watch(() => session.epoch, () => { files.reset(); showHistory.value = false; showDeleted.value = false; });
 watch(() => [session.user?.id, session.user?.site_admin, session.workspaceRole], () => {if (!session.user || (page.value === 'admin' && !session.user.site_admin) || (page.value === 'members' && !managesWorkspace.value)) page.value = 'documents';});
 let accessRequest = 0;
-const editable = computed(() => !!access.value?.actions.includes('edit') && !session.recoveryNeeded);
-const status = computed(() => editor.paused ? '会话已暂停' : editor.saving ? '保存中，可继续输入' : editor.uncertainSave ? '保存结果未确认，草稿已保留' : blockedSave.value ? '保存受阻，草稿已保留' : editor.conflict ? '修订冲突，草稿已保留' : loadingAccess.value ? '正在确认文档权限' : accessRefreshFailed.value ? '文档权限读取失败，草稿已保留' : !editable.value ? '只读' : editor.dirty ? '未保存' : editor.comparisonDraft !== null ? '合并参考仍保留，请修改并保存' : '已保存');
+const editable = computed(() => !!access.value?.actions.includes('edit') && !session.recoveryNeeded && documents.canEdit);
+const canSave = computed(() => editable.value && !documents.pending && !documents.busy);
+const status = computed(() => editor.paused ? '会话暂停或此页只读' : documents.busy ? '正在确认操作，可继续输入' : documents.pending ? '操作结果待确认' : editor.conflict ? '修订冲突，需比较' : documents.operationError ? '保存受阻' : !editable.value ? '只读' : editor.dirty ? '尚未保存到服务器' : editor.comparisonDraft !== null ? '合并参考仍保留' : '已存服务器');
 function syncDirectory() { directory.setRoot(session.root, session.user?.id ?? null); }
 async function failure(error: unknown, epoch: number) {
   if (epoch !== session.epoch || (error instanceof ApiError && error.code === 'stale')) return;
@@ -79,45 +86,40 @@ async function login(name: string, password: string) {
   catch (error) { await failure(error, session.epoch); }
   finally { busy.value = false; }
 }
-function discardWork() {
-  if (editor.saving) return false;
-  if (editor.hasUnsavedWork && !window.confirm('草稿、未确认的保存结果或合并参考仍未处理。取消可继续保留；确定将明确丢弃这些内容。请先复制需要保留的正文。')) return false;
-  editor.setIdentity(session.user?.id ?? null, { discard: true }); access.value = null; blockedSave.value = false; accessRefreshFailed.value = false;
-  return true;
-}
 async function logout() {
-  if (!discardWork()) return;
-  busy.value = true; message.value = ''; directory.reset();
+  busy.value = true; message.value = ''; logoutFailed.value = false;
   try { await session.logout(); syncDirectory(); ready.value = true; }
-  catch (error) { await failure(error, session.epoch); syncDirectory(); }
+  catch (error) { logoutFailed.value = documents.localStatus.kind === 'error'; await failure(error, session.epoch); syncDirectory(); }
   finally { busy.value = false; }
 }
-function acceptPending() {
-  if (!window.confirm('确定丢弃原账号的草稿和合并参考，并进入新账号？请先复制需要保留的内容。')) return;
-  if (session.acceptPending({ discard: true })) { access.value = null; blockedSave.value = false; accessRefreshFailed.value = false; syncDirectory(); }
+async function forceLogout() {
+  if (!window.confirm('本机存储失败。请先复制当前文字；继续退出可能丢失尚未落盘的内容。此前已存的本机稿仍会保留。确定继续退出？')) return;
+  try { await documents.leave({acknowledgeUnstoredLoss: true}); await logout(); }
+  catch (error) { await failure(error, session.epoch); }
+}
+async function acceptPending() {
+  try { await documents.leave(); if (session.acceptPending({discard: true})) syncDirectory(); }
+  catch (error) { await failure(error, session.epoch); }
 }
 async function toggle(id: string) {
   const epoch = session.epoch;
   try { await directory.toggle(id); } catch (error) { await failure(error, epoch); }
 }
 async function select(id: string) {
-  if (editor.document?.id === id || editor.saving || !discardWork()) return;
-  const ticket = editor.beginLoad(); const epoch = session.epoch;
-  loadingDocument.value = true; message.value = '';
-  try { const value = await client.readDocument(id); if (editor.finishLoad(ticket, value.document)) { access.value = value.access; blockedSave.value = false; } }
+  if (loadingDocument.value || documents.busy || !session.scope || !session.user) return;
+  const epoch = session.epoch; loadingDocument.value = true; message.value = ''; showHistory.value = false;
+  try { await documents.open(session.scope, id, session.user.id); localObjectId.value = id; }
   catch (error) { await failure(error, epoch); }
   finally { loadingDocument.value = false; }
 }
 async function save() {
-  if (!editable.value || fileBusy.value) return;
-  const ticket = editor.beginSave(); if (!ticket) return;
-  const epoch = session.epoch; message.value = ''; blockedSave.value = false;
-  try { const value = await client.saveDocument(ticket); if (editor.saveSucceeded(ticket, value.document)) access.value = value.access; }
-  catch (error) {
-    const code = error instanceof ApiError ? error.code : 'network';
-    if (editor.saveFailed(ticket, code)) blockedSave.value = error instanceof ApiError && (error.status === 403 || code === 'frozen');
-    await failure(error, epoch);
-  }
+  if (!canSave.value || fileBusy.value) return;
+  message.value = '';
+  try { await documents.save(); }
+  catch (error) { await failure(error, session.epoch); }
+}
+function edit(text: string) {
+  try { documents.edit(text); } catch (error) { void failure(error, session.epoch); }
 }
 async function latest() {
   if (!editor.document || editor.paused) return;
@@ -126,7 +128,7 @@ async function latest() {
   catch (error) { await failure(error, epoch); }
   finally { loadingLatest.value = false; }
 }
-function merge() { if (window.confirm('以最新正文开始手动合并？当前草稿将保留在独立的只读参考区。')) { editor.startMerge(); blockedSave.value = false; } }
+async function merge() { if (documents.pending || documents.busy) return; if (window.confirm('以最新正文开始手动合并？当前草稿将保留在独立的只读参考区。')) { try { await documents.startMerge(); } catch (error) { await failure(error, session.epoch); } } }
 async function passwordRevoked() {
   busy.value = true; access.value = null; directory.reset();
   try {await session.expire(); ready.value = true; message.value = '密码已修改，请重新登录。未保存的草稿仍保留。';}
@@ -155,13 +157,15 @@ onUnmounted(() => { window.removeEventListener('beforeunload', beforeUnload); wi
       <p v-if="busy" class="muted-copy m-0" role="status">正在处理…</p>
       <NButton v-if="(!ready || session.recoveryNeeded) && !busy" size="small" @click="bootstrap">重新加载会话（保留草稿）</NButton>
       <NAlert v-if="ready && !session.initialized" type="info">数据库尚未初始化，请联系管理员。</NAlert>
-      <NAlert v-if="session.blocked" type="warning" role="alert">已登录另一个账号。原账号草稿仍保留，请先复制，或明确丢弃后继续。<NButton class="mt-3" :disabled="busy" @click="acceptPending">丢弃原草稿并继续</NButton></NAlert>
+      <NAlert v-if="session.blocked" type="warning" role="alert">已登录另一个账号。原账号草稿仍保留，排空本机写入后可继续。<NButton class="mt-3" :disabled="busy" @click="acceptPending">保留已存草稿并继续</NButton></NAlert>
     </div>
     <main v-show="page === 'documents'" class="workbench" :class="{'anonymous-workbench': !session.user}">
       <aside v-if="session.user" class="directory-sidebar">
         <div class="toolbar-row justify-between mb-5"><h2 class="section-title">目录</h2><NButton v-if="session.root && session.rootAccess?.actions.includes('create')" size="small" :disabled="navigationBusy" @click="files.open('document', session.root)">新建文档</NButton></div>
         <DirectoryTree v-if="directory.root" :node="directory.root" :access="session.rootAccess" :state="directory" :selected="editor.document?.id ?? null" :disabled="navigationBusy" @toggle="toggle" @select="select" @action="files.open" @failure="failure($event, session.epoch)" />
         <p v-else class="muted-copy">没有可访问的根目录。请联系工作区管理员确认成员资格。</p>
+        <NButton v-if="managesWorkspace" class="mt-3" :disabled="navigationBusy" @click="showDeleted = !showDeleted">已删除文档</NButton>
+        <details class="mt-3"><summary>找回无法打开文档的本机稿</summary><p class="muted-copy">输入曾打开文档的标识，仅检查当前账号的这一篇本机稿。</p><input v-model="localObjectId" aria-label="文档标识" /><NButton :disabled="navigationBusy || !localObjectId.trim()" @click="select(localObjectId.trim())">检查本机稿</NButton></details>
         <p class="directory-help muted-copy">右键目录项或点击操作按钮，可新建、重命名和删除。</p>
       </aside>
       <aside v-else-if="!session.blocked" class="login-surface"><LoginPanel :client="client" :busy="busy" :ready="ready && !session.recoveryNeeded && session.initialized" @login="login" @failure="failure($event, session.epoch)" /></aside>
@@ -169,7 +173,11 @@ onUnmounted(() => { window.removeEventListener('beforeunload', beforeUnload); wi
         <NAlert v-if="files.message.value" :type="files.messageType.value" class="mb-3" :role="files.messageType.value === 'error' ? 'alert' : 'status'">{{files.message.value}}</NAlert>
         <p v-if="loadingDocument" class="muted-copy" role="status">正在读取文档…</p>
         <NButton v-if="accessRefreshFailed && session.user && !editor.paused && editor.document" :disabled="navigationBusy" class="mb-3" @click="refreshDocumentAccess">重新读取文档权限（保留草稿）</NButton>
-        <DocumentEditor :editor="editor" :editable="editable" :status="status" :busy="busy || loadingLatest || loadingAccess" @edit="editor.edit($event)" @save="save" @latest="latest" @merge="merge" />
+        <DraftRecovery :documents="documents" :editor="editor" :authenticated="!!session.user && !session.recoveryNeeded" :logout-failed="logoutFailed" @failure="failure($event, session.epoch)" @force-logout="forceLogout" />
+        <DocumentEditor :editor="editor" :editable="editable" :can-save="canSave" :status="status" :busy="busy || loadingLatest || loadingAccess || documents.busy || !!documents.pending" @edit="edit" @save="save" @latest="latest" @merge="merge" />
+        <NButton v-if="session.user && editor.document && access?.actions.includes('history_read')" class="mt-3" @click="showHistory = !showHistory">{{showHistory ? '收起历史' : '查看文档历史'}}</NButton>
+        <DocumentHistory v-if="showHistory && session.user && editor.document && access?.actions.includes('history_read')" :key="editor.document.id + session.epoch" :client="client" :object-id="editor.document.id" :editor="editor" :documents="documents" :can-restore="editable" @failure="failure($event, session.epoch)" />
+        <DeletedDocuments v-if="showDeleted && session.user && managesWorkspace" :key="session.epoch" :client="client" @failure="failure($event, session.epoch)" />
       </article>
     </main>
     <template v-if="session.user">
@@ -177,6 +185,6 @@ onUnmounted(() => { window.removeEventListener('beforeunload', beforeUnload); wi
       <AdminUsersPage v-if="page === 'admin' && session.user.site_admin" :key="session.epoch" :client="client" :user="session.user" @profile="session.user = $event" @failure="failure($event, session.epoch)" />
       <MembersPage v-if="page === 'members' && managesWorkspace" :key="session.user.id" :client="client" :user="session.user" :workspace-role="session.workspaceRole" @refresh="bootstrap" @failure="failure($event, session.epoch)" />
     </template>
-    <FileActions :show="files.visible.value" :name="files.name.value" :action="files.action.value" :busy="fileBusy || !!editor.saving" :private-document="files.privateDocument.value" :can-create-private="['editor', 'admin', 'owner'].includes(session.workspaceRole ?? '')" :error="files.error.value" @update:private-document="files.privateDocument.value = $event" @update:name="files.name.value = $event" @close="files.close" @submit="files.submit" />
+    <FileActions :show="files.visible.value" :name="files.name.value" :action="files.action.value" :busy="fileBusy || documents.busy" :private-document="files.privateDocument.value" :can-create-private="['editor', 'admin', 'owner'].includes(session.workspaceRole ?? '')" :error="files.error.value" @update:private-document="files.privateDocument.value = $event" @update:name="files.name.value = $event" @close="files.close" @submit="files.submit" />
   </div>
 </template>

@@ -1,5 +1,8 @@
 **
 !requirements.txt
+!alembic.ini
+!migrations
+!migrations/**
 !src
 !src/**
 !frontend

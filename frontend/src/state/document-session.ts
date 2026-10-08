@@ -37,6 +37,10 @@ export class DocumentSession {
     private awaitingRecovery = false;
     private clearing = false;
     get pending(): PendingOperation | null { return this.record?.pending ?? null; }
+    get canEdit(): boolean {
+        return this.leaseHeld && this.available && this.ownsIdentity() && !this.leaving &&
+            !this.awaitingRecovery && !this.clearing && !['draft', 'local-only'].includes(this.recovery.kind);
+    }
     constructor(client: ApiClient, editor: EditorState, store: DraftStorage = new DraftStore(), options: DocumentSessionOptions = {}) {
         this.client = markRaw(client); this.editor = editor; this.store = markRaw(store);
         this.acquireLease = options.acquireLease ?? acquireDraftLease;
@@ -124,6 +128,16 @@ export class DocumentSession {
         this.record.content = this.editor.draft; this.record.generation++;
         this.record.baseRevisionId ??= this.editor.revision;
         void this.persist().catch(() => {});
+    }
+    async startMerge() {
+        this.writable();
+        if (this.pending || this.busy || this.awaitingRecovery || !this.record) return;
+        if (!this.editor.startMerge()) return;
+        // Only explicit adoption advances the local base; unresolved comparisons retain their old base.
+        this.record.baseRevisionId = this.editor.revision;
+        this.record.content = this.editor.draft; this.record.generation++;
+        this.recovery = { kind: 'none' };
+        await this.persist();
     }
     async continueDraft() {
         this.writable();
@@ -285,7 +299,7 @@ export class DocumentSession {
             await this.lease?.release();
             this.lease = null; this.leaseHeld = false; this.record = null; this.available = false; this.access = null;
             this.localOnlyContent = null; this.awaitingRecovery = false; this.recovery = { kind: 'none' }; this.localStatus = { kind: 'idle' }; this.busy = false;
-            this.persistenceError = null;
+            this.persistenceError = null; this.operationError = null;
             this.editor.hideDocument();
         } finally { this.leaving = false; }
     }

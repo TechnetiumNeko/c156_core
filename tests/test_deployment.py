@@ -209,3 +209,66 @@ class DeploymentHealthTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn('Health verified', result.stdout)
         self.assertGreaterEqual(sum(port == public_port for port, _ in seen), 2)
+
+
+class DeploymentMaintenanceTest(unittest.TestCase):
+    """Run the production maintenance helper and real SQLite commands without Docker.
+
+    The Compose boundary models stopped/running services only; this is not an
+    image, container shutdown, or production deployment acceptance test.
+    """
+    def run_maintenance(self, root, fail_upgrade=False):
+        import sys
+        adapter = r'''
+source "$1"
+compose_for() {
+  local root=$1; shift
+  case "$1" in
+    stop) rm -f "$root/running"; printf 'stop\n' >> "$root/events" ;;
+    ps) [[ ! -f "$root/running" ]] || printf 'service-id\n' ;;
+    up) touch "$root/running"; printf 'start\n' >> "$root/events" ;;
+    run)
+      shift; while [[ $1 != python ]]; do shift; done
+      shift
+      [[ ! -f "$root/running" ]] || return 99
+      local args=() arg
+      for arg in "$@"; do
+        arg=${arg//\/data\/c156.sqlite/$root\/data\/c156.sqlite}
+        arg=${arg//\/backups\//$root\/backups\/}
+        args+=("$arg")
+      done
+      if [[ ${args[2]:-} == upgrade && $FAIL_UPGRADE == 1 ]]; then
+        "$PYTHON_BIN" -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute("UPDATE alembic_version SET version_num=?", ("unsupported",)); c.commit(); c.close()' "$root/data/c156.sqlite"
+      fi
+      "$PYTHON_BIN" "${args[@]}"
+      ;;
+    *) return 98 ;;
+  esac
+}
+maintain_and_start "$2" before.sqlite
+'''
+        return subprocess.run(['bash', '-c', adapter, 'maintenance', str(SCRIPT.with_name('common.sh')), str(root)],
+                              capture_output=True, text=True,
+                              env={**os.environ, 'PYTHON_BIN': sys.executable, 'FAIL_UPGRADE': '1' if fail_upgrade else '0'})
+
+    def test_stop_backup_upgrade_verify_start_and_failed_migration_stays_stopped(self):
+        import sqlite3
+        from src.storage.management import initialize_database
+        from src.storage.migrations import HEAD_REVISION
+        for failed in (False, True):
+            with self.subTest(failed=failed), TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / 'data').mkdir(); (root / 'backups').mkdir()
+                initialize_database(root / 'data/c156.sqlite')
+                (root / 'running').touch()
+                result = self.run_maintenance(root, failed)
+                self.assertEqual(result.returncode == 0, not failed, result.stderr)
+                self.assertEqual((root / 'running').exists(), not failed)
+                self.assertEqual((root / 'events').read_text(), 'stop\n' if failed else 'stop\nstart\n')
+                with sqlite3.connect(root / 'backups/before.sqlite') as backup:
+                    self.assertEqual(backup.execute('SELECT version_num FROM alembic_version').fetchone()[0], HEAD_REVISION)
+                    self.assertGreater(backup.execute('SELECT count(*) FROM objects').fetchone()[0], 0)
+                if failed:
+                    self.assertIn('migration failed; services remain stopped', result.stderr)
+                    with sqlite3.connect(root / 'data/c156.sqlite') as source:
+                        self.assertEqual(source.execute('SELECT version_num FROM alembic_version').fetchone()[0], 'unsupported')

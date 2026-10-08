@@ -2,6 +2,8 @@
 
 用于共同创作和阅读内容的网站原型。当前实现统一 SQLite 内容内核，CLI、新 Vue 工作台和旧 HTML／JS 工作台通过同一个 `ContentService` 读写虚拟目录和文档。新工作台采用 Vue + FastAPI，提供登录、账号与成员管理、文件操作、Markdown 实时预览编辑、手动保存和冲突处理；旧原生前端与 Python 标准库 HTTP 入口继续保留。
 
+现有协议 2 数据库须在停写备份后显式执行 `python -m src.storage upgrade --database PATH`；普通启动只验证版本。[行为与验证范围](docs/版本与恢复/行为规范.md)。
+
 ## 架构边界
 
 项目按“领域内核 → 存储 → 应用服务 → 入口适配器”组织。`core` 只放纯数据和规则，`storage` 负责持久化，`services` 负责跨入口共用的业务操作；CLI、HTTP 和未来的 WebSocket 只是不同的适配器。账号和实时协作属于跨入口的应用能力，不直接放进网页代码，也不把 Web 请求细节带入内容内核。
@@ -35,7 +37,7 @@ npm --prefix frontend ci
 .venv/bin/python -m src.identity bootstrap-admin --database /tmp/c156-vue-local.sqlite --login-name owner --display-name 管理员
 ```
 
-两个终端分别启动（需要已有协议 2 WAL 库；普通启动不初始化、播种、升级或修复）：
+两个终端分别启动（需要已有受支持 Alembic revision 的 WAL 库；普通启动不初始化、播种、升级或修复）：
 
 ```bash
 .venv/bin/python run_server.py --database /tmp/c156-vue-local.sqlite --port 8001
@@ -45,7 +47,7 @@ npm --prefix frontend run dev
 
 打开 <http://127.0.0.1:5173/>；Vite 将 `/api` 代理至 loopback 后端 8001，保留 Host/Origin。后端为单 worker，无 CORS，不信任转发来源头。端口占用时先停止自己启动的进程或显式配置其他端口，配置方法见 [工作台开发](docs/工作台开发.md)。结束时分别 Ctrl+C。
 
-新页面使用 Naive UI + UnoCSS，正文采用 CodeMirror 实时预览：默认显示格式，光标进入相应范围时显露 Markdown 标记；完整源码和独立阅读是次级入口。目录右键或操作按钮提供新建、重命名和删除；顶栏提供个人账号、站点账号和默认工作区管理。高级对象 ACL、所有权转移、LaTeX 与可视化表格编辑尚未接入新页面，可按需要使用旧入口或 CLI 的已有管理能力。草稿仅存内存，保存失败或冲突会保留正文与基础修订。默认库仍为 `data/c156.sqlite`，只有明确的管理命令会创建或导入它。
+新页面使用 Naive UI + UnoCSS，正文采用 CodeMirror 实时预览：默认显示格式，光标进入相应范围时显露 Markdown 标记；完整源码和独立阅读是次级入口。目录右键或操作按钮提供新建、重命名和删除；顶栏提供个人账号、站点账号和默认工作区管理。高级对象 ACL、所有权转移、LaTeX 与可视化表格编辑尚未接入新页面，可按需要使用旧入口或 CLI 的已有管理能力。草稿通过原生 IndexedDB 保存，Web Locks 保证同一草稿单页编辑；不支持所需能力时只读。历史区独立查看和比较，恢复前须处理未保存稿，保存和恢复用固定操作键查询或重试。退出保留已存本机稿；存储失败时先复制、重试或明确确认风险后退出。默认库仍为 `data/c156.sqlite`，只有明确的管理命令会创建或导入它。
 
 ## 旧工作台快速试用
 
@@ -79,13 +81,13 @@ python run_web.py --database data/c156.sqlite --port 8000
 # 终端入口：python run_cli.py --database data/c156.sqlite
 ```
 
-创建空的新库使用 `python -m src.storage init --database /path/to/new.sqlite`，再执行同路径的 `python -m src.identity bootstrap-admin --database /path/to/new.sqlite --login-name owner --display-name 管理员`，然后启动 CLI 或 Web 并正常登录。init 和旧容器导入只创建协议 2 内容库，不自动创建账号；bootstrap 只允许空账号且无 owner 的库，密码通过 getpass 输入并确认，不放在命令行。原始样本保留不变，迁移不覆盖不匹配的目标。CLI／Web 的默认库为 `data/c156.sqlite`，启动只校验数据库，不自动创建、导入或修复；演示入口的初始化流程与它们分开。所有入口的 `--help` 均不创建数据库。
+创建空的新库使用 `python -m src.storage init --database /path/to/new.sqlite`，再执行同路径的 `python -m src.identity bootstrap-admin --database /path/to/new.sqlite --login-name owner --display-name 管理员`，然后启动 CLI 或 Web 并正常登录。init 和旧容器导入通过固定 Alembic 迁移链创建内容库，不自动创建账号；bootstrap 只允许空账号且无 owner 的库，密码通过 getpass 输入并确认，不放在命令行。原始样本保留不变，迁移不覆盖不匹配的目标。CLI／Web 的默认库为 `data/c156.sqlite`，启动只校验数据库，不自动创建、导入或修复；演示入口的初始化流程与它们分开。所有入口的 `--help` 均不创建数据库。
 
 ## 当前范围
 
 内核已支持稳定对象 ID、虚拟目录、正文修订、元数据、创建、重命名、移动、软删除、事务与版本冲突检查。CLI 保留原有命令，Web 提供浏览、新建与正文读写。虚拟 `/` 是 `main` 文件夹；`admin`、`resource`、`bin` 为兼容目录，软删除不自动移入 `bin`。
 
-账号、密码、24 小时会话、站点账号管理、默认工作区成员／角色、继承 ACL、私密与文档冻结已实现。实时协作、作品级提交与分支、历史恢复、媒体上传和公开站点部署仍是后续阶段。后续实现应将这些能力放在共用应用服务层，再由 Web 和 CLI 接入。正文 revision_id 检测正文冲突；entry.version 检测结构和 metadata，workspace_access_settings.version 检测成员／ACL／阅读范围／已有对象私密／冻结配置。工作区 owner 不等于 private 创建者；站点管理员也不会自动获得其他工作区内容权限。默认 read_scope 为 members；可配置 authenticated／everyone 的阅读基线，但所有写操作仍要求有效成员。reader 默认读取，editor 默认读取／编辑／创建／改名／移动／删除，admin／owner 管理工作区授权与内容，owner 可转移所有权；review／publish 仅建模配置，没有发布流程。ACL 按最近对象及 user、role、authenticated、everyone 顺序计算，无法阅读的祖先不会因私密所有权而被跳过。其他人的冻结不会被管理角色静默绕过。
+账号、密码、24 小时会话、站点账号管理、默认工作区成员／角色、继承 ACL、私密与文档冻结已实现。文档历史浏览、正文恢复、操作回执和本机草稿已接入 Vue；已删除历史仅向工作区 admin/owner 开放，不提供恢复删除。实时协作、作品级提交与分支、媒体上传仍属后续阶段。生产部署脚本已提供显式迁移流程，真实部署验收见部署文档。后续实现应将这些能力放在共用应用服务层，再由 Web 和 CLI 接入。正文 revision_id 检测正文冲突；entry.version 检测结构和 metadata，workspace_access_settings.version 检测成员／ACL／阅读范围／已有对象私密／冻结配置。工作区 owner 不等于 private 创建者；站点管理员也不会自动获得其他工作区内容权限。默认 read_scope 为 members；可配置 authenticated／everyone 的阅读基线，但所有写操作仍要求有效成员。reader 默认读取，editor 默认读取／编辑／创建／改名／移动／删除，admin／owner 管理工作区授权与内容，owner 可转移所有权；review／publish 仅建模配置，没有发布流程。ACL 按最近对象及 user、role、authenticated、everyone 顺序计算，无法阅读的祖先不会因私密所有权而被跳过。其他人的冻结不会被管理角色静默绕过。
 
 站点管理员创建账号后一次性取得 48 小时激活凭据；重置凭据有效 1 小时，重置和改密会撤销旧会话。凭据应私下交给对应用户，不写日志。CLI 支持 login／logout 和 mkdir／edit --private；网页提供账号与访问管理。草稿绑定原用户：会话失效暂停保存并保留正文和原基础修订，同用户重登继续，换账号须处理旧草稿；草稿仅驻留内存。
 

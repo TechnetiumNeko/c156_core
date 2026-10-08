@@ -230,3 +230,21 @@ test('acknowledged unstored-loss exit drains writes, hides memory, allows logout
     assert.equal(f.editor.document, null); assert.equal(f.session.pending, null);
     assert.deepEqual(await f.store.read(key), stored);
 });
+
+test('explicit manual merge persists adopted base and reopens unchanged server without a false conflict', async () => {
+    const s = setup();
+    await s.session.open(scope, 'doc', 'alice'); s.session.edit('local before merge'); await s.session.flush();
+    s.setHead(doc('server update', 'r2'));
+    await s.session.open(scope, 'doc', 'alice'); await s.session.continueDraft();
+    assert.equal(s.editor.conflict, true);
+    assert.equal((await s.store.read(key))?.baseRevisionId, 'r1');
+    await s.session.startMerge();
+    assert.equal(s.editor.comparisonDraft, 'local before merge');
+    assert.equal(s.editor.draft, 'server update');
+    s.session.edit('manually merged'); await s.session.flush();
+    assert.equal((await s.store.read(key))?.baseRevisionId, 'r2');
+    await s.session.open(scope, 'doc', 'alice');
+    assert.deepEqual(s.session.recovery, {kind: 'draft', baseStale: false});
+    await s.session.continueDraft();
+    assert.equal(s.editor.draft, 'manually merged'); assert.equal(s.editor.conflict, false);
+});
