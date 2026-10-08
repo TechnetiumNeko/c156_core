@@ -21,7 +21,7 @@ const receipt = (v: unknown) => record(v) && exact(v, ['operation_id', 'operatio
 const operationResult = (v: unknown) => record(v) && exact(v, ['operation', 'current_revision_id']) && receipt(v.operation) && id(v.current_revision_id);
 const operationStatus = (v: unknown) => operationResult(v) || (record(v) && exact(v, ['operation']) && v.operation === null);
 const revisionKeys = ['revision_id', 'parent_revision_id', 'actor_id', 'actor_display_name', 'source_kind', 'restored_from_revision_id', 'created_at'];
-const revisionFields = (v: RecordValue) => id(v.revision_id) && nullableId(v.parent_revision_id) && nullableId(v.actor_id) && (v.actor_display_name === null || string(v.actor_display_name)) && ['save', 'restore', 'import', 'unknown'].includes(String(v.source_kind)) && nullableId(v.restored_from_revision_id) && timestamp(v.created_at);
+const revisionFields = (v: RecordValue) => id(v.revision_id) && nullableId(v.parent_revision_id) && nullableId(v.actor_id) && (v.actor_display_name === null || string(v.actor_display_name)) && string(v.source_kind) && ['save', 'restore', 'import', 'unknown'].includes(v.source_kind) && nullableId(v.restored_from_revision_id) && timestamp(v.created_at);
 const revisionSummary = (v: unknown) => record(v) && exact(v, revisionKeys) && revisionFields(v);
 const revisionView = (v: unknown) => record(v) && exact(v, [...revisionKeys, 'content']) && revisionFields(v) && string(v.content);
 const revisionPage = (v: unknown) => record(v) && exact(v, ['revisions', 'head_revision_id', 'next_cursor']) && Array.isArray(v.revisions) && v.revisions.every(revisionSummary) && id(v.head_revision_id) && nullableId(v.next_cursor);

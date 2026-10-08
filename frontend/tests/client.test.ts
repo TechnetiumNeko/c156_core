@@ -139,9 +139,9 @@ test('history APIs encode query parameters and validate each public projection',
             await assert.rejects(invoke(new ApiClient(async () => json(incomplete))), (error: ApiError) => error.code === 'response');
         }
     }
-    for (const invalid of [{...revision, source_kind: 'invalid'}, {...revision, actor_id: 4}, {...revision, content: 'body'}]) {
+    for (const invalid of [{...revision, source_kind: 'invalid'}, {...revision, source_kind: ['save']}, {...revision, source_kind: {toString: 'save'}}, {...revision, actor_id: 4}, {...revision, content: 'body'}]) {
         const client = new ApiClient(async () => json({revisions: [invalid], head_revision_id: 'r1', next_cursor: null}));
-        await assert.rejects(client.listDocumentRevisions('d'), (error: ApiError) => error.code === 'response');
+        await assert.rejects(client.listDocumentRevisions('d'), (error: ApiError) => error instanceof ApiError && error.code === 'response' && error.outcome === 'uncertain');
     }
 });
 
