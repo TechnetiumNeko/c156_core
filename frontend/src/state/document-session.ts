@@ -269,15 +269,23 @@ export class DocumentSession {
         await this.store.flush();
         if (this.persistenceError) throw this.persistenceError;
     }
-    async leave() {
-        // Drain before invalidating callbacks or releasing the lock; failures retain the visible memory draft.
+    async leave({ acknowledgeUnstoredLoss = false }: { acknowledgeUnstoredLoss?: boolean } = {}) {
+        // Only an explicit UI acknowledgement may abandon failed local writes. Default exit retains memory.
         this.leaving = true;
         try {
-            await this.flush();
-            this.epoch++;
+            if (acknowledgeUnstoredLoss) {
+                // Invalidate queued writes and server callbacks before draining work already in progress.
+                this.epoch++;
+                await this.queue;
+                try { await this.store.flush(); } catch { /* Loss was acknowledged; never clear the stored record. */ }
+            } else {
+                await this.flush();
+                this.epoch++;
+            }
             await this.lease?.release();
             this.lease = null; this.leaseHeld = false; this.record = null; this.available = false; this.access = null;
             this.localOnlyContent = null; this.awaitingRecovery = false; this.recovery = { kind: 'none' }; this.localStatus = { kind: 'idle' }; this.busy = false;
+            this.persistenceError = null;
             this.editor.hideDocument();
         } finally { this.leaving = false; }
     }

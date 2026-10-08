@@ -8,6 +8,7 @@ import { acquireDraftLease } from '../src/drafts/lease.ts';
 import { draftDTO, type DraftKey, type DraftRecord, type DraftStorage, type PendingOperation } from '../src/drafts/types.ts';
 import { DocumentSession } from '../src/state/document-session.ts';
 import { EditorState } from '../src/state/editor.ts';
+import { SessionState } from '../src/state/session.ts';
 const key: DraftKey = { userId: 'alice', workspaceId: 'work', branchId: 'main', objectId: 'doc' };
 const scope = { workspace_id: 'work', branch_id: 'main' };
 const node = { id: 'doc', kind: 'document', name: 'Doc', parent_id: null, position: 0, version: 1, path: '/', created_at: '', modified_at: '', metadata: {} };
@@ -32,13 +33,14 @@ class ControlledStore implements DraftStorage {
 }
 function setup() {
     const store = new ControlledStore(); const editor = reactive(new EditorState()) as EditorState;
-    const writes: Record<string, string>[] = []; let head = doc(); let identity = 'alice'; let denied = false;
+    const writes: Record<string, string>[] = []; let head = doc(); let identity = 'alice'; let denied = false; let loggedOut = false;
     let mutation: (request: Record<string, string>) => Promise<Response> = async request => { head = doc(request.content ?? 'restored', 'r2'); return json(receipt(request.operation_id, 'r2', request.source_revision_id ? 'restore' : 'save')); };
     let status: () => Promise<Response> = async () => json({ operation: null });
     let historyDenied = false;
     const client = new ApiClient(async (url, init) => {
         const path = String(url);
-        if (path === '/api/bootstrap') return json(bootstrap(identity));
+        if (path === '/api/bootstrap') return json(loggedOut ? { initialized: true, nonce: 'anonymous' } : bootstrap(identity));
+        if (path === '/api/auth/logout') { loggedOut = true; return json({ ok: true }); }
         if (path === '/api/session') return json(auth(identity));
         if (path.includes('/operation?')) return status();
         if (path.includes('/revision?')) return historyDenied ? json({ error: { code: 'forbidden', message: 'denied' } }, 403) : json({ revision_id: 'r1', parent_revision_id: null, actor_id: null, actor_display_name: null, source_kind: 'save', restored_from_revision_id: null, created_at: '2026-01-01T00:00:00Z', content: 'original' });
@@ -47,7 +49,7 @@ function setup() {
     });
     let releases = 0; let ids = 0;
     const session = reactive(new DocumentSession(client, editor, store, { acquireLease: async () => ({ async release() { releases++; } }), operationId: () => 'op-' + ++ids }));
-    return { store, editor, session, writes, setMutation: (fn: typeof mutation) => { mutation = fn; }, setStatus: (fn: typeof status) => { status = fn; }, setHead: (d: typeof head) => { head = d; }, setIdentity: (id: string) => { identity = id; }, deny: () => { denied = true; }, denyHistory: () => { historyDenied = true; }, releases: () => releases };
+    return { client, store, editor, session, writes, setMutation: (fn: typeof mutation) => { mutation = fn; }, setStatus: (fn: typeof status) => { status = fn; }, setHead: (d: typeof head) => { head = d; }, setIdentity: (id: string) => { identity = id; }, deny: () => { denied = true; }, denyHistory: () => { historyDenied = true; }, releases: () => releases };
 }
 async function seed(store: DraftStorage, pending = false) {
     const record = await store.claim(key);
@@ -200,4 +202,31 @@ test('recovered successful restore does not offer its superseded base as a new d
     f.setHead(doc('restored', 'r2')); f.setStatus(async () => json(receipt('restore-old', 'r2', 'restore')));
     await f.session.open(scope, 'doc', 'alice'); await f.session.continueDraft();
     assert.equal(f.editor.draft, 'restored'); assert.equal(f.editor.dirty, false); assert.equal(f.session.pending, null);
+});
+
+
+test('acknowledged unstored-loss exit drains writes, hides memory, allows logout and ignores late callbacks', async () => {
+    const f = setup(); await f.session.open(scope, 'doc', 'alice'); f.session.edit('persisted');
+    const response = deferred<Response>(); f.setMutation(() => response.promise);
+    const saving = f.session.save();
+    while (!f.writes.length) await new Promise(resolve => setImmediate(resolve));
+    const stored = await f.store.read(key);
+    const identity = new SessionState(f.client, f.editor, { beforeLeaveIdentity: () => f.session.leave() });
+    f.store.failure = true; f.session.edit('unstored');
+    await assert.rejects(identity.logout(), /disk full/);
+    assert.equal(f.editor.draft, 'unstored'); assert.equal(f.session.leaseHeld, true); assert.equal(f.releases(), 0);
+    const disk = deferred<void>(); f.store.gate = disk.promise; f.session.edit('last unsaved');
+    await new Promise(resolve => setImmediate(resolve));
+    const leaving = f.session.leave({ acknowledgeUnstoredLoss: true });
+    assert.throws(() => f.session.edit('blocked'));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(f.releases(), 0); // An already-started write must settle before releasing ownership.
+    disk.resolve(); await leaving;
+    assert.equal(f.editor.document, null); assert.equal(f.editor.draft, ''); assert.equal(f.session.leaseHeld, false);
+    assert.equal(f.releases(), 1); assert.notEqual(f.session.localStatus.kind, 'stored');
+    assert.deepEqual(await f.store.read(key), stored);
+    assert.equal(await identity.logout(), true); assert.equal(identity.user, null); assert.equal(f.client.nonce, 'anonymous');
+    response.resolve(json(receipt('op-1'))); await saving;
+    assert.equal(f.editor.document, null); assert.equal(f.session.pending, null);
+    assert.deepEqual(await f.store.read(key), stored);
 });
