@@ -16,6 +16,7 @@ from ..storage.management import validate_default_tree
 from ..storage.identity_repository import IdentityRepository
 from ..storage.access_repository import AccessRepository
 from ..storage.audit_repository import AuditRepository
+from ..storage.operation_repository import OperationRepository
 from ..storage.auth_throttle_repository import AuthThrottleRepository
 from .content_operations import ContentOperations
 
@@ -32,6 +33,7 @@ class _ApplicationTransaction:
         self.clock = lambda: self.now
         self.identity = IdentityRepository(connection)
         self.audit = AuditRepository(connection)
+        self.operations = OperationRepository(connection)
         self.throttles = AuthThrottleRepository(connection)
 
     def _require_active(self) -> None:
@@ -79,6 +81,13 @@ class _ApplicationTransaction:
         return ContentOperations(Repository(self._connection,
             workspace_id=scope.workspace_id, branch_id=scope.branch_id),
             policy=self.policy(scope, principal))
+
+    def history(self, scope, principal):
+        from .history import HistoryOperations
+        self._require_active()
+        return HistoryOperations(Repository(self._connection,
+            workspace_id=scope.workspace_id, branch_id=scope.branch_id),
+            self.policy(scope, principal), self.identity)
 
     def configured_scope(self) -> ContentScope:
         """Locate the fixed display root without validating sibling contents."""

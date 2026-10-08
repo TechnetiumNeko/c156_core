@@ -69,6 +69,7 @@ def create_app(config: ServerConfig) -> FastAPI:
     from .routes_accounts import router as accounts_router
     from .routes_members import router as members_router
     from .routes_nodes import router as nodes_router
-    for extra_router in (accounts_router, members_router, nodes_router):
+    from .routes_history import router as history_router
+    for extra_router in (accounts_router, members_router, nodes_router, history_router):
         app.include_router(extra_router)
     return app

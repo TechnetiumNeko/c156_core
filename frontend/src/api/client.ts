@@ -1,11 +1,33 @@
-import type { Bootstrap, Session, ChildrenResponse, DocumentResponse, SaveDocument, UserResponse, AccountGrant, WorkspaceResponse, NodeResponse, DeletePlan, UserAction } from './types.ts';
+import type { Bootstrap, Session, ChildrenResponse, DocumentResponse, SaveDocument, UserResponse, AccountGrant, WorkspaceResponse, NodeResponse, DeletePlan, UserAction, SaveDocumentOperation, RestoreDocumentOperation, OperationResult, OperationStatus, RevisionPage, RevisionView, RevisionDiff, DeletedDocumentPage } from './types.ts';
 export class ApiError extends Error {
   code: string; status: number;
+  get outcome(): 'rejected' | 'uncertain' {
+    return ['unauthenticated', 'forbidden', 'frozen', 'not_found', 'conflict', 'already_exists',
+      'not_directory', 'not_document', 'invalid_name', 'invalid_argument', 'path_outside_root',
+      'directory_not_empty', 'protected_node', 'invalid_move', 'storage_busy', 'unsupported_schema',
+      'rate_limited', 'invalid_request', 'payload_too_large', 'method_not_allowed'].includes(this.code)
+      ? 'rejected' : 'uncertain';
+  }
   constructor(code: string, message: string, status = 0) { super(message); this.name = 'ApiError'; this.code = code; this.status = status; }
 }
 type RecordValue = Record<string, unknown>;
 const record = (v: unknown): v is RecordValue => typeof v === 'object' && v !== null && !Array.isArray(v);
 const string = (v: unknown): v is string => typeof v === 'string';
+const id = (v: unknown): v is string => string(v) && v.length > 0;
+const nullableId = (v: unknown) => v === null || id(v);
+const timestamp = (v: unknown) => string(v) && /^\d{4}-\d{2}-\d{2}T/.test(v) && Number.isFinite(Date.parse(v));
+const exact = (v: RecordValue, keys: string[]) => Object.keys(v).length === keys.length && keys.every(k => k in v);
+const receipt = (v: unknown) => record(v) && exact(v, ['operation_id', 'operation_type', 'result_revision_id', 'changed', 'created_at']) && id(v.operation_id) && (v.operation_type === 'save' || v.operation_type === 'restore') && id(v.result_revision_id) && typeof v.changed === 'boolean' && timestamp(v.created_at);
+const operationResult = (v: unknown) => record(v) && exact(v, ['operation', 'current_revision_id']) && receipt(v.operation) && id(v.current_revision_id);
+const operationStatus = (v: unknown) => operationResult(v) || (record(v) && exact(v, ['operation']) && v.operation === null);
+const revisionKeys = ['revision_id', 'parent_revision_id', 'actor_id', 'actor_display_name', 'source_kind', 'restored_from_revision_id', 'created_at'];
+const revisionFields = (v: RecordValue) => id(v.revision_id) && nullableId(v.parent_revision_id) && nullableId(v.actor_id) && (v.actor_display_name === null || string(v.actor_display_name)) && string(v.source_kind) && ['save', 'restore', 'import', 'unknown'].includes(v.source_kind) && nullableId(v.restored_from_revision_id) && timestamp(v.created_at);
+const revisionSummary = (v: unknown) => record(v) && exact(v, revisionKeys) && revisionFields(v);
+const revisionView = (v: unknown) => record(v) && exact(v, [...revisionKeys, 'content']) && revisionFields(v) && string(v.content);
+const revisionPage = (v: unknown) => record(v) && exact(v, ['revisions', 'head_revision_id', 'next_cursor']) && Array.isArray(v.revisions) && v.revisions.every(revisionSummary) && id(v.head_revision_id) && nullableId(v.next_cursor);
+const revisionDiff = (v: unknown) => record(v) && exact(v, ['from_revision_id', 'to_revision_id', 'diff']) && id(v.from_revision_id) && id(v.to_revision_id) && string(v.diff);
+const deletedPage = (v: unknown) => record(v) && exact(v, ['documents', 'next_cursor']) && Array.isArray(v.documents) && v.documents.every(d => record(d) && exact(d, ['object_id', 'name', 'path']) && id(d.object_id) && string(d.name) && string(d.path)) && nullableId(v.next_cursor);
+const pageQuery = (cursor?: string, limit?: number) => (cursor === undefined ? '' : '&cursor=' + encodeURIComponent(cursor)) + (limit === undefined ? '' : '&limit=' + encodeURIComponent(limit));
 const node = (v: unknown) => record(v) && string(v.id) && string(v.name) && string(v.kind) && (v.parent_id === null || string(v.parent_id)) && typeof v.version === 'number' && typeof v.position === 'number' && string(v.path) && string(v.created_at) && string(v.modified_at) && 'metadata' in v;
 const access = (v: unknown) => record(v) && typeof v.version === 'number' && Array.isArray(v.actions) && v.actions.every(string) && string(v.visibility) && typeof v.frozen === 'boolean' && typeof v.can_freeze === 'boolean' && typeof v.can_unfreeze === 'boolean';
 const user = (v: unknown) => record(v) && string(v.id) && string(v.login_name) && string(v.display_name) && string(v.status) && typeof v.site_admin === 'boolean' && typeof v.version === 'number';
@@ -15,7 +37,7 @@ const workspace = (v: unknown) => record(v) && record(v.workspace) && typeof v.w
 const nodeResponse = (v: unknown) => record(v) && node(v.node) && (v.access === undefined || access(v.access));
 const ok = (v: unknown) => record(v) && v.ok === true;
 const session = (v: unknown) => record(v) && record(v.user) && string(v.user.id) && string(v.user.login_name) && string(v.user.display_name) && string(v.user.status) && typeof v.user.site_admin === 'boolean' && typeof v.user.version === 'number' && string(v.csrf) && string(v.expires_at);
-const bootstrap = (v: unknown) => record(v) && typeof v.initialized === 'boolean' && (string(v.nonce) || (session(v) && typeof v.workspace_access_version === 'number' && (v.workspace_role === null || string(v.workspace_role)) && (v.root === null || node(v.root)) && (v.root_access === null || access(v.root_access))));
+const bootstrap = (v: unknown) => record(v) && typeof v.initialized === 'boolean' && (string(v.nonce) || (session(v) && record(v.scope) && id(v.scope.workspace_id) && id(v.scope.branch_id) && typeof v.workspace_access_version === 'number' && (v.workspace_role === null || string(v.workspace_role)) && (v.root === null || node(v.root)) && (v.root_access === null || access(v.root_access))));
 const document = (v: unknown) => record(v) && node(v.document) && record(v.document) && string(v.document.content) && string(v.document.revision_id) && access(v.access);
 export class ApiClient {
   epoch = 0; nonce: string | null = null; csrf: string | null = null;
@@ -50,6 +72,13 @@ export class ApiClient {
   listChildren(folderId: string) { return this.request<ChildrenResponse>(`/api/children?folder_id=${encodeURIComponent(folderId)}`, v => record(v) && Array.isArray(v.nodes) && v.nodes.every(n => node(n) && record(n) && access(n.access))); }
   readDocument(objectId: string) { return this.request<DocumentResponse>(`/api/document?object_id=${encodeURIComponent(objectId)}`, document); }
   saveDocument(value: SaveDocument) { return this.request<DocumentResponse>('/api/document', document, 'PUT', { object_id: value.object_id, content: value.content, expected_revision_id: value.expected_revision_id }, 'csrf'); }
+  saveDocumentOperation(value: SaveDocumentOperation) { return this.request<OperationResult>('/api/document', operationResult, 'PUT', { object_id: value.object_id, content: value.content, expected_revision_id: value.expected_revision_id, operation_id: value.operation_id }, 'csrf'); }
+  restoreDocument(value: RestoreDocumentOperation) { return this.request<OperationResult>('/api/document/restore', operationResult, 'POST', { object_id: value.object_id, source_revision_id: value.source_revision_id, expected_revision_id: value.expected_revision_id, operation_id: value.operation_id }, 'csrf'); }
+  getOperationStatus(objectId: string, operationId: string) { return this.request<OperationStatus>(`/api/document/operation?object_id=${encodeURIComponent(objectId)}&operation_id=${encodeURIComponent(operationId)}`, operationStatus); }
+  listDocumentRevisions(objectId: string, cursor?: string, limit?: number) { return this.request<RevisionPage>(`/api/document/history?object_id=${encodeURIComponent(objectId)}${pageQuery(cursor, limit)}`, revisionPage); }
+  readDocumentRevision(objectId: string, revisionId: string) { return this.request<RevisionView>(`/api/document/revision?object_id=${encodeURIComponent(objectId)}&revision_id=${encodeURIComponent(revisionId)}`, revisionView); }
+  compareDocumentRevisions(objectId: string, fromId: string, toId: string) { return this.request<RevisionDiff>(`/api/document/diff?object_id=${encodeURIComponent(objectId)}&from_revision_id=${encodeURIComponent(fromId)}&to_revision_id=${encodeURIComponent(toId)}`, revisionDiff); }
+  listDeletedDocuments(cursor?: string, limit?: number) { const query = pageQuery(cursor, limit); return this.request<DeletedDocumentPage>('/api/documents/deleted' + (query ? '?' + query.slice(1) : ''), deletedPage); }
   activate(token: string, password: string) { return this.request<UserResponse>('/api/auth/activate', userResponse, 'POST', {token, password}, 'nonce'); }
   resetPassword(token: string, password: string) { return this.request<UserResponse>('/api/auth/reset', userResponse, 'POST', {token, password}, 'nonce'); }
   changeProfile(display_name: string, expected_version: number) { return this.request<UserResponse>('/api/account/profile', userResponse, 'PUT', {display_name, expected_version}, 'csrf'); }

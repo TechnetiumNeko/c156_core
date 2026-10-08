@@ -8,7 +8,8 @@ from __future__ import annotations
 
 from .database import Database
 from .errors import BusyError, ConstraintError, SchemaError, StorageError
-from .schema import SCHEMA_VERSION, create_schema
+from .schema import SCHEMA_VERSION, create_schema, validate_schema
+from .migrations import upgrade_database
 
 __all__ = [
     "Database",
@@ -18,4 +19,6 @@ __all__ = [
     "StorageError",
     "SCHEMA_VERSION",
     "create_schema",
+    "validate_schema",
+    "upgrade_database",
 ]

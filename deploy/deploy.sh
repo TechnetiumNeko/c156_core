@@ -56,8 +56,7 @@ if [[ $action == --prepare ]]; then
 fi
 [[ -f $root/data/c156.sqlite ]] || fail 'database missing: explicit initialization required'
 backup="before-${sequence}-$(date -u +%Y%m%dT%H%M%S)-$$.sqlite"
-compose_for "$root" run --rm --interactive=false -T --no-deps backend python -m src.storage backup --database /data/c156.sqlite --output "/backups/$backup" < /dev/null
-compose_for "$root" up -d --wait --wait-timeout 90 < /dev/null
+maintain_and_start "$root" "$backup"
 if [[ $NGINX_MANAGED == 1 ]]; then
   sed "s/@APP_PORT@/$APP_PORT/g" "$root/deploy/nginx-proxy.inc.template" > "$root/nginx/proxy.inc.new.$$"
   chmod 644 "$root/nginx/proxy.inc.new.$$"

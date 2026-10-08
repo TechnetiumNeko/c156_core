@@ -1,3 +1,5 @@
 argon2-cffi==25.1.0
 fastapi==0.142.2
 uvicorn==0.53.0
+Alembic==1.20.0
+SQLAlchemy==2.0.54

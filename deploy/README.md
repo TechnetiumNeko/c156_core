@@ -287,3 +287,13 @@ compose_for "$PWD" logs --tail 100 backend frontend
 <a id="panel-proxy"></a>
 
 面板代理设置见[第 5 步 B](#panel-managed)。
+
+## P0/P1 维护升级
+
+每次正式发布前，运维必须停止同一数据库的外部 CLI、旧 Web、后台写进程，并保持停止直到维护结束；已有连接和排队写入也必须退出。旧程序兼容标记不能替代停写。脚本不能证明任意外部进程已经停止。
+
+`deploy.sh` 保持原参数和 prepare_only 行为。在已有 deploy.lock 内，正式部署调用 `maintain_and_start`：停止全部 Compose 服务，查询确认没有运行服务，使用候选后端镜像执行源版本可读的 SQLite backup，显式 upgrade，再以只读连接检查 Alembic revision、默认树、外键、integrity_check 和 WAL，全部通过后才 up。备份/迁移/核验失败不会启动服务，也不会自动恢复备份。
+
+启动后或健康检查失败时可能已接受新写入。只修复前进；不得据“发布失败”直接覆盖旧快照。只有人工确认从备份到当前始终未重新开放任何写入口，才可在全部服务停止后显式恢复备份，先保留事故数据目录，再用兼容镜像验证。无法证明停写期间没有新稿时，不执行数据回退。
+
+本轮真实 SQLite 管理命令和维护 helper 检查通过；Compose 边界使用本地测试替身，不能证明真实容器行为。本地 Docker daemon socket 权限不足，未做镜像构建、容器 smoke 或远端发布。后端 Dockerfile 的 Alembic 配置与 migrations COPY 已补入 .dockerignore 白名单。

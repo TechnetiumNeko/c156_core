@@ -539,7 +539,7 @@ class Repository:
 
         row = self._connection.execute(
             "SELECT id, workspace_id, object_id, parent_revision_id, content, "
-            "created_at FROM document_revisions "
+            "created_at, actor_id, source_kind, restored_from_revision_id FROM document_revisions "
             "WHERE workspace_id = ? AND object_id = ? AND id = ?",
             (self._workspace_id, object_id, revision_id),
         ).fetchone()
@@ -552,7 +552,19 @@ class Repository:
             parent_revision_id=row["parent_revision_id"],
             content=row["content"],
             created_at=row["created_at"],
+            actor_id=row["actor_id"],
+            source_kind=row["source_kind"],
+            restored_from_revision_id=row["restored_from_revision_id"],
         )
+
+    def list_document_entries(self) -> list[EntryRecord]:
+        """List retained and active documents in this exact branch."""
+        rows = self._connection.execute(
+            f"SELECT {_ENTRY_COLUMNS} {_ENTRY_JOIN} "
+            "WHERE e.workspace_id = ? AND e.branch_id = ? AND o.kind = 'document' "
+            "ORDER BY e.object_id", (self._workspace_id, self._branch_id),
+        ).fetchall()
+        return [_entry_record(row) for row in rows]
 
     # -- writes -------------------------------------------------------------
 
@@ -619,8 +631,8 @@ class Repository:
             )
         self._connection.execute(
             "INSERT INTO document_revisions "
-            "(id, workspace_id, object_id, parent_revision_id, content, created_at) "
-            "VALUES (?,?,?,?,?,?)",
+            "(id, workspace_id, object_id, parent_revision_id, content, created_at, "
+            "actor_id, source_kind, restored_from_revision_id) VALUES (?,?,?,?,?,?,?,?,?)",
             (
                 record.id,
                 record.workspace_id,
@@ -628,6 +640,9 @@ class Repository:
                 record.parent_revision_id,
                 record.content,
                 record.created_at,
+                record.actor_id,
+                record.source_kind,
+                record.restored_from_revision_id,
             ),
         )
 

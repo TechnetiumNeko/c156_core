@@ -58,7 +58,7 @@ TEST_DEPLOY_ENABLED 未设为 true 时，main 自动发布不会推镜像或更�
 
 确认部署代码已在 main，再把仓库地址和操作手册交给朋友。等服务器检查、SSH 公钥和配置完成后运行 prepare；完成初始化和入口配置后正式发布。test 首次安装未准备好时先不要启用自动部署开关；prod 始终手动选择。
 
-首次 clone 用来取得源码、setup 和文档。后续 Actions 通过 SSH 执行 git fetch origin main，检出本次测试镜像对应的准确提交，写入 images.env，再拉镜像并执行 docker compose up。fetch 最多尝试三次，每次 90 秒、间隔 5 秒；服务器必须持续能访问 GitHub；无需 rsync 或源码压缩包。config.env、images.env 和运行目录已加入 Git 忽略。服务器有受 Git 跟踪的本地修改时会停止部署，不强制覆盖。
+首次 clone 用来取得源码、setup 和文档。后续 Actions 通过 SSH 执行 git fetch origin main，检出本次测试镜像对应的准确提交，写入 images.env，再拉镜像并执行下文维护升级顺序。fetch 最多尝试三次，每次 90 秒、间隔 5 秒；服务器必须持续能访问 GitHub；无需 rsync 或源码压缩包。config.env、images.env 和运行目录已加入 Git 忽略。服务器有受 Git 跟踪的本地修改时会停止部署，不强制覆盖。
 
 ## 技术说明
 
@@ -95,6 +95,16 @@ BUILD_SHA="$BUILD_SHA" BACKEND_IMAGE=c156-backend:test FRONTEND_IMAGE=c156-front
 
 ## 简化后的发布行为
 
-不再使用 releases、current、previous 或 prepared。prepare_only 只更新仓库和拉取镜像，不启动网站；普通发布先做数据库快照，再 Compose 更新、可选的 Nginx 校验／重载及限时健康轮询（容器健康后最多 90 秒、间隔 5 秒，检查本机与公网前端/API 同 SHA）。失败保留现场，不自动回退或恢复数据库。日志与手动恢复见 [排错清单](TROUBLESHOOTING.md)。同目标的 Actions 串行，服务器额外使用 deploy.lock；早于已成功发布序号的任务会拒绝执行。仓库保持 detached HEAD 是正常的，每次发布会检出准确提交。
+不再使用 releases、current、previous 或 prepared。prepare_only 只更新仓库和拉取镜像，不启动网站；普通发布先停写并核实 Compose 已停止，再备份、显式升级、只读核验与 Compose 启动、可选的 Nginx 校验／重载及限时健康轮询（容器健康后最多 90 秒、间隔 5 秒，检查本机与公网前端/API 同 SHA）。失败保留现场，不自动回退或恢复数据库。日志与手动恢复见 [排错清单](TROUBLESHOOTING.md)。同目标的 Actions 串行，服务器额外使用 deploy.lock；早于已成功发布序号的任务会拒绝执行。仓库保持 detached HEAD 是正常的，每次发布会检出准确提交。
 
 Compose 的容器 healthcheck 每 10 秒持续执行；发布脚本的本机／公网轮询只在本次发布中运行，用于确认入口已提供本次 SHA，不启动额外常驻监控。
+
+## P0/P1 维护升级
+
+每次正式发布前，运维必须停止同一数据库的外部 CLI、旧 Web、后台写进程，并保持停止直到维护结束；已有连接和排队写入也必须退出。旧程序兼容标记不能替代停写。脚本不能证明任意外部进程已经停止。
+
+`deploy.sh` 保持原参数和 prepare_only 行为。在已有 deploy.lock 内，正式部署调用 `maintain_and_start`：停止全部 Compose 服务，查询确认没有运行服务，使用候选后端镜像执行源版本可读的 SQLite backup，显式 upgrade，再以只读连接检查 Alembic revision、默认树、外键、integrity_check 和 WAL，全部通过后才 up。备份/迁移/核验失败不会启动服务，也不会自动恢复备份。
+
+启动后或健康检查失败时可能已接受新写入。只修复前进；不得据“发布失败”直接覆盖旧快照。只有人工确认从备份到当前始终未重新开放任何写入口，才可在全部服务停止后显式恢复备份，先保留事故数据目录，再用兼容镜像验证。无法证明停写期间没有新稿时，不执行数据回退。
+
+本轮真实 SQLite 管理命令和维护 helper 检查通过；Compose 边界使用本地测试替身，不能证明真实容器行为。本地 Docker daemon socket 权限不足，未做镜像构建、容器 smoke 或远端发布。后端 Dockerfile 的 Alembic 配置与 migrations COPY 已补入 .dockerignore 白名单。

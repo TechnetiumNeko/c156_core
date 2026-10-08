@@ -61,3 +61,13 @@ button:disabled { cursor: default; }
 @media (max-width: 650px) { .app-header { gap: 12px; padding: 12px 16px; } .app-header nav { order: 3; width: 100%; gap: 0; } .workbench { grid-template-columns: minmax(0, 1fr); } .directory-sidebar { border-right: 0; border-bottom: 1px solid var(--line); max-height: 300px; overflow: auto; padding: 16px; } .directory-help { margin-top: 12px; } .anonymous-workbench { padding: 24px 16px; } .login-surface { padding: 24px; } .app-notices { padding: 12px 16px 0; } .document-header { padding: 16px; } .markdown-editor .cm-content, .markdown-body { padding: 20px 18px 48px; } .format-toolbar .muted-copy { display: none; } }
 
 .markdown-editor.source-mode .cm-content { font-family: ui-monospace, Consolas, "Microsoft YaHei", monospace; font-size: 14px; }
+
+/* History is a separate read-only reading surface, below the current editor. */
+.history-panel, .draft-status { margin: 1rem 0; padding: 1.25rem; border: 1px solid #e2e7df; background: #fff; border-radius: 8px; }
+.history-list { padding-left: 1.25rem; max-height: 18rem; overflow: auto; }
+.history-list li { margin: .65rem 0; }
+.history-list .n-button { white-space: normal; height: auto; text-align: left; }
+.copy-text, .history-diff { box-sizing: border-box; width: 100%; min-height: 8rem; max-height: 28rem; overflow: auto; padding: .8rem; margin: .8rem 0; border: 1px solid #e2e7df; border-radius: 4px; background: #f5f6f3; color: #25352e; font: inherit; line-height: 1.65; }
+.history-diff { white-space: pre-wrap; overflow-wrap: anywhere; font-family: monospace; }
+.copy-text:focus-visible, details summary:focus-visible, input:focus-visible { outline: 2px solid #287558; outline-offset: 2px; }
+@media (max-width: 700px) { .history-panel, .draft-status { padding: .8rem; } .history-list .n-button__content { white-space: normal; overflow-wrap: anywhere; } }

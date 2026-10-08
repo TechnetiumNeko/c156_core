@@ -10,8 +10,8 @@ from src.core.errors import Forbidden, Frozen, InvalidArgument, NotFound
 from src.identity.models import Principal
 from .models import AccessRule, AccessSettings, Decision, Membership, PolicyNode
 
-ACTIONS = ('read', 'edit', 'create', 'rename', 'move', 'delete', 'review', 'publish')
-EDITOR_ACTIONS = frozenset(('read', 'edit', 'create', 'rename', 'move', 'delete'))
+ACTIONS = ('read', 'history_read', 'edit', 'create', 'rename', 'move', 'delete', 'review', 'publish')
+EDITOR_ACTIONS = frozenset(('read', 'history_read', 'edit', 'create', 'rename', 'move', 'delete'))
 
 class AccessPolicy:
     def __init__(self, principal: Principal, membership: Membership | None,
@@ -99,7 +99,7 @@ class AccessPolicy:
         Records may be a full active subtree; normal ancestry checks belong to
         require_action, never to this lock-only check. Locks grant no rights.
         """
-        if operation not in ACTIONS or operation == 'read':
+        if operation not in ACTIONS or operation in ('read', 'history_read'):
             raise InvalidArgument('A modifying content operation is required')
         for node in records:
             actor = self.locks.get(node.object_id)

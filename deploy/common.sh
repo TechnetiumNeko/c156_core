@@ -94,3 +94,22 @@ poll_deployment_health() {
   done
   return 1
 }
+
+# Caller holds deploy.lock. Operators must stop external CLI/legacy/background writers first.
+# Compose can verify only its own managed services, not arbitrary host processes.
+maintain_and_start() {
+  local root=$1 backup=$2 running
+  printf 'Maintenance: external CLI, legacy Web and background writers must already be stopped.\n'
+  compose_for "$root" stop < /dev/null || fail 'could not stop managed services; no migration attempted'
+  running=$(compose_for "$root" ps --status running -q < /dev/null) || fail 'could not verify stopped services'
+  [[ -z $running ]] || fail 'managed services still running; no migration attempted'
+  compose_for "$root" run --rm --interactive=false -T --no-deps backend python -m src.storage backup --database /data/c156.sqlite --output "/backups/$backup" < /dev/null || fail 'backup failed; services remain stopped'
+  compose_for "$root" run --rm --interactive=false -T --no-deps backend python -m src.storage upgrade --database /data/c156.sqlite < /dev/null || fail 'migration failed; services remain stopped; do not start old writers'
+  compose_for "$root" run --rm --interactive=false -T --no-deps backend python -c 'import sqlite3; from contextlib import closing; from src.storage.migrations import validate_schema; from src.storage.management import validate_default_tree; c=sqlite3.connect("file:/data/c156.sqlite?mode=ro", uri=True); c.row_factory=sqlite3.Row
+with closing(c):
+ validate_schema(c); validate_default_tree(c)
+ if c.execute("PRAGMA foreign_key_check").fetchall(): raise RuntimeError("foreign key check failed")
+ if [tuple(r) for r in c.execute("PRAGMA integrity_check")] != [("ok",)]: raise RuntimeError("integrity check failed")
+ if c.execute("PRAGMA journal_mode").fetchone()[0].lower() != "wal": raise RuntimeError("WAL required")' < /dev/null || fail 'verification failed; services remain stopped'
+  compose_for "$root" up -d --wait --wait-timeout 90 < /dev/null || fail 'startup failed; writes may have opened; repair forward, never automatically restore backup'
+}

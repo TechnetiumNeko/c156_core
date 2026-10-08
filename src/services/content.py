@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import json
-from ..core.errors import InvalidArgument, Unauthenticated, Forbidden, Conflict
+from hashlib import sha256
+from ..core.errors import InvalidArgument, Unauthenticated, Forbidden, Conflict, NotFound, UnsupportedSchema
 from ..core.json_values import thaw_json, validate_metadata
 from ..core.paths import parse_path, validate_name
 from .content_operations import ContentOperations
+from .views import RevisionPage, RevisionView, RevisionDiff, DeletedDocumentPage, OperationReceipt, OperationResult
 
 from ..core.models import ContentScope, DeleteSnapshot, DocumentSnapshot, NodeSnapshot, TreeItem
 from ..storage.database import Database
@@ -125,7 +127,7 @@ class ContentService:
             raise InvalidArgument('invalid visibility')
         if visibility == 'private' and operations._policy.role not in ('editor', 'admin', 'owner'):
             raise Forbidden('private creation requires editor role')
-        node = (operations.create_document(scope, parent_id, name, content=content)
+        node = (operations.create_document(scope, parent_id, name, content=content, actor_id=actor.user_id)
                 if document else operations.create_folder(scope, parent_id, name))
         repo = work.access(scope)
         repo.insert_ownership(OwnershipRecord(scope.workspace_id, node.id, actor.user_id))
@@ -155,6 +157,32 @@ class ContentService:
         with self._read() as work:
             return work.authorized_content(scope, work.resolve_principal(session_token)).read_document(scope, object_id)
 
+    def list_document_revisions(self, scope: ContentScope, object_id: str, *,
+                                cursor: str | None = None, limit: int = 50,
+                                session_token: str | None) -> RevisionPage:
+        with self._read() as work:
+            return work.history(scope, work.resolve_principal(session_token)).list_document_revisions(
+                scope, object_id, cursor=cursor, limit=limit)
+
+    def read_document_revision(self, scope: ContentScope, object_id: str, revision_id: str,
+                               *, session_token: str | None) -> RevisionView:
+        with self._read() as work:
+            return work.history(scope, work.resolve_principal(session_token)).read_document_revision(
+                scope, object_id, revision_id)
+
+    def compare_document_revisions(self, scope: ContentScope, object_id: str,
+                                   from_revision_id: str, to_revision_id: str,
+                                   *, session_token: str | None) -> RevisionDiff:
+        with self._read() as work:
+            return work.history(scope, work.resolve_principal(session_token)).compare_document_revisions(
+                scope, object_id, from_revision_id, to_revision_id)
+
+    def list_deleted_documents(self, scope: ContentScope, *, cursor: str | None = None,
+                               limit: int = 50, session_token: str | None) -> DeletedDocumentPage:
+        with self._read() as work:
+            return work.history(scope, work.resolve_principal(session_token)).list_deleted_documents(
+                scope, cursor=cursor, limit=limit)
+
     def save_document(self, scope: ContentScope, object_id: str, content: str, *, expected_revision_id: str, session_token: str | None) -> DocumentSnapshot:
         return self._save_public(scope, object_id, content, expected_revision_id, session_token)
 
@@ -166,13 +194,97 @@ class ContentService:
         self._require_str(content, "content")
         self._require_str(expected_revision_id, "expected_revision_id")
         with self._write() as work:
-            operations, _ = self._writer(work, scope, token)
+            operations, actor = self._writer(work, scope, token)
             operations.require_write(scope, object_id, 'edit', unfrozen=True)
-            snapshot = operations.save_document(scope, object_id, content, expected_revision_id=expected_revision_id)
+            snapshot = operations.save_document(scope, object_id, content, expected_revision_id=expected_revision_id, actor_id=actor.user_id)
             if with_access:
                 from .views import DocumentAccessView
                 return DocumentAccessView(snapshot, self._access_view(operations, scope, object_id))
             return snapshot
+
+    @staticmethod
+    def _operation_document(work, scope, object_id, operations, actor):
+        # Active confirmation needs read only; retained confirmation is H07 management-only.
+        try:
+            entry = operations.get_entry(scope, object_id)
+            operations._require_document(entry)
+        except NotFound:
+            if not operations._policy.management:
+                raise
+            entry = work.history(scope, actor).require_document(scope, object_id)
+        if not entry.current_revision_id:
+            raise UnsupportedSchema('document has no current revision')
+        return entry
+
+    @staticmethod
+    def _operation_result(record, current_revision_id):
+        return OperationResult(OperationReceipt(record.operation_id, record.operation_type,
+            record.result_revision_id, record.changed, record.created_at), current_revision_id)
+
+    def save_document_operation(self, scope: ContentScope, object_id: str, content: str, *,
+                                expected_revision_id: str, operation_id: str,
+                                session_token: str | None) -> OperationResult:
+        self._require_str(content, 'content')
+        return self._document_operation(scope, object_id, 'save', content,
+            expected_revision_id, operation_id, session_token)
+
+    def restore_document_revision(self, scope: ContentScope, object_id: str,
+                                  source_revision_id: str, *, expected_revision_id: str,
+                                  operation_id: str, session_token: str | None) -> OperationResult:
+        self._require_str(source_revision_id, 'source_revision_id')
+        if not source_revision_id:
+            raise InvalidArgument('source_revision_id must not be empty')
+        return self._document_operation(scope, object_id, 'restore', source_revision_id,
+            expected_revision_id, operation_id, session_token)
+
+    def _document_operation(self, scope, object_id, kind, payload, expected, operation_id, token):
+        from ..storage.operation_repository import OperationRecord
+        for name, value in (('object_id', object_id), ('expected_revision_id', expected),
+                            ('operation_id', operation_id)):
+            self._require_str(value, name)
+            if not value:
+                raise InvalidArgument(name + ' must not be empty')
+        # JSON escapes preserve the exact string (including newlines and Unicode form).
+        digest = sha256(json.dumps([scope.workspace_id, scope.branch_id, scope.root_id,
+            object_id, kind, expected, payload], ensure_ascii=True,
+            separators=(',', ':')).encode('ascii')).hexdigest()
+        with self._write() as work:
+            operations, actor = self._writer(work, scope, token)
+            entry = self._operation_document(work, scope, object_id, operations, actor)
+            previous = work.operations.get(actor.user_id, operation_id)
+            if previous is not None:
+                if previous.request_digest != digest:
+                    raise Conflict('operation_id is already bound to another request')
+                return self._operation_result(previous, entry.current_revision_id)
+            operations.require_write(scope, object_id, 'edit', unfrozen=True)
+            content = payload
+            if kind == 'restore':
+                content = work.history(scope, actor).read_revision(scope, object_id, payload).content
+            snapshot = operations.save_document(scope, object_id, content,
+                expected_revision_id=expected, actor_id=actor.user_id, source_kind=kind,
+                restored_from_revision_id=payload if kind == 'restore' else None)
+            record = OperationRecord(actor.user_id, operation_id, scope.workspace_id,
+                scope.branch_id, object_id, kind, digest, snapshot.revision_id,
+                snapshot.revision_id != entry.current_revision_id, work.now.isoformat())
+            work.operations.insert(record)
+            return self._operation_result(record, snapshot.revision_id)
+
+    def get_operation_status(self, scope: ContentScope, object_id: str, operation_id: str, *,
+                             session_token: str | None) -> OperationResult | None:
+        for name, value in (('object_id', object_id), ('operation_id', operation_id)):
+            self._require_str(value, name)
+            if not value:
+                raise InvalidArgument(name + ' must not be empty')
+        with self._read() as work:
+            operations, actor = self._writer(work, scope, session_token)
+            entry = self._operation_document(work, scope, object_id, operations, actor)
+            record = work.operations.get(actor.user_id, operation_id)
+            if record is None:
+                return None
+            if (record.workspace_id, record.branch_id, record.object_id) != (
+                    scope.workspace_id, scope.branch_id, object_id):
+                raise Conflict('operation_id is already bound to another resource')
+            return self._operation_result(record, entry.current_revision_id)
 
     def set_metadata(self, scope: ContentScope, object_id: str, changes: dict, *, expected_version: int, session_token: str | None) -> NodeSnapshot:
         self._require_str(object_id, "object_id")
@@ -349,4 +461,4 @@ class ContentService:
             except NotFound:
                 root = None
             return BootstrapView(initialized, session_view, operations._policy.role,
-                operations._policy.version, root)
+                operations._policy.version, root, scope)

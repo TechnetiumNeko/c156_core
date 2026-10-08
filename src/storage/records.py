@@ -41,3 +41,6 @@ class RevisionRecord:
     parent_revision_id: str | None
     content: str
     created_at: str
+    actor_id: str | None = None
+    source_kind: str = "unknown"
+    restored_from_revision_id: str | None = None

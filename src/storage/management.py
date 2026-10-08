@@ -29,11 +29,13 @@ from .repository import (
     insert_workspace,
     lookup_default_main,
 )
-from .schema import SCHEMA_VERSION, create_schema
+from .schema import create_schema
+from .migrations import validate_schema, upgrade_database
 
 __all__ = [
     "DEFAULT_TOP_LEVEL_NAMES",
     "initialize_database",
+    "upgrade_database",
     "validate_default_tree",
 ]
 
@@ -140,16 +142,7 @@ def _validate_existing(path: Path) -> ContentScope:
     database = Database(path)
     try:
         with database.management_connection() as connection:
-            version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if version != SCHEMA_VERSION:
-                raise UnsupportedSchema(
-                    "unsupported database protocol version; initialize at a new path",
-                    details={
-                        "expected": SCHEMA_VERSION,
-                        "actual": version,
-                        "path": str(path),
-                    },
-                )
+            validate_schema(connection)
             scope = validate_default_tree(connection)
     except UnsupportedSchema:
         raise
