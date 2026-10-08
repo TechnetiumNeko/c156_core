@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, markRaw, onMounted, onUnmounted, reactive, ref, watch, defineAsyncComponent } from 'vue';
-import { NButton, NAlert } from 'naive-ui';
+import { computed, h, markRaw, onMounted, onUnmounted, reactive, ref, watch, defineAsyncComponent } from 'vue';
+import { NButton, NAlert, NDrawer, NDrawerContent, useMessage } from 'naive-ui';
 import { useConfirm } from './composables/useConfirm.ts';
 import { useFileOperations } from './composables/useFileOperations.ts';
 import { errorText } from './composables/errors.ts';
+import { themeVariables } from './theme.ts';
 const AccountPage = defineAsyncComponent(() => import('./pages/AccountPage.vue'));
 const AdminUsersPage = defineAsyncComponent(() => import('./pages/AdminUsersPage.vue'));
 const MembersPage = defineAsyncComponent(() => import('./pages/MembersPage.vue'));
@@ -20,6 +21,10 @@ import LoginPanel from './components/LoginPanel.vue';
 import DirectoryTree from './components/DirectoryTree.vue';
 import DocumentEditor from './components/DocumentEditor.vue';
 const confirm = useConfirm();
+const notices = useMessage();
+function notify(text: string, type: 'success' | 'warning' | 'error') {
+  notices.create(() => h('span', {role: type === 'success' ? 'status' : 'alert'}, text), {type, duration: type === 'success' ? 3200 : 6500});
+}
 const page = ref<'documents' | 'account' | 'admin' | 'members'>('documents');
 const client = markRaw(new ApiClient());
 const editor = reactive(new EditorState()) as EditorState;
@@ -33,10 +38,14 @@ const logoutFailed = ref(false); const showHistory = ref(false); const showDelet
 const localObjectId = ref('');
 const accessRefreshFailed = ref(false); const loadingAccess = ref(false);
 const files = useFileOperations(client, session, directory, editor, select, failure, confirm, documents);
+watch(message, text => { if (text) notify(text, 'warning'); });
+watch(files.message, text => {
+  if (text) notify(text, files.messageType.value === 'error' ? 'error' : 'success');
+});
 const fileBusy = files.busy;
 const navigationBusy = computed(() => busy.value || loadingAccess.value || loadingDocument.value || documents.busy || fileBusy.value);
 const managesWorkspace = computed(() => session.workspaceRole === 'admin' || session.workspaceRole === 'owner');
-watch(() => session.epoch, () => { files.reset(); showHistory.value = false; showDeleted.value = false; });
+watch(() => session.epoch, () => { notices.destroyAll(); files.reset(); showHistory.value = false; showDeleted.value = false; }, {flush: 'sync'});
 watch(() => [session.user?.id, session.user?.site_admin, session.workspaceRole], () => {if (!session.user || (page.value === 'admin' && !session.user.site_admin) || (page.value === 'members' && !managesWorkspace.value)) page.value = 'documents';});
 let accessRequest = 0;
 const editable = computed(() => !!access.value?.actions.includes('edit') && !session.recoveryNeeded && documents.canEdit);
@@ -116,7 +125,11 @@ async function select(id: string) {
 async function save() {
   if (!canSave.value || fileBusy.value) return;
   message.value = '';
-  try { await documents.save(); }
+  const epoch = session.epoch; const revision = editor.revision;
+  try {
+    await documents.save();
+    if (epoch === session.epoch && editor.revision !== revision && !documents.pending && !documents.operationError) notify('已保存到服务器。', 'success');
+  }
   catch (error) { await failure(error, session.epoch); }
 }
 function edit(text: string) {
@@ -153,8 +166,7 @@ onUnmounted(() => { window.removeEventListener('beforeunload', beforeUnload); wi
       </nav>
       <div v-if="session.user" class="toolbar-row ml-auto"><span class="text-sm text-muted max-w-36 truncate">{{session.user.display_name}}</span><NButton size="small" :disabled="navigationBusy" @click="logout">退出</NButton></div>
     </header>
-    <div v-if="message || busy || (!ready || session.recoveryNeeded) || (ready && !session.initialized) || session.blocked" class="app-notices">
-      <NAlert v-if="message" type="warning" role="alert" class="mb-2">{{message}}</NAlert>
+    <div v-if="busy || (!ready || session.recoveryNeeded) || (ready && !session.initialized) || session.blocked" class="app-notices">
       <p v-if="busy" class="muted-copy m-0" role="status">正在处理…</p>
       <NButton v-if="(!ready || session.recoveryNeeded) && !busy" size="small" @click="bootstrap">重新加载会话（保留草稿）</NButton>
       <NAlert v-if="ready && !session.initialized" type="info">数据库尚未初始化，请联系管理员。</NAlert>
@@ -171,13 +183,10 @@ onUnmounted(() => { window.removeEventListener('beforeunload', beforeUnload); wi
       </aside>
       <aside v-else-if="!session.blocked" class="login-surface"><LoginPanel :client="client" :busy="busy" :ready="ready && !session.recoveryNeeded && session.initialized" @login="login" @failure="failure($event, session.epoch)" /></aside>
       <article class="editor-area" :class="{'anonymous-empty': !session.user && !editor.document}">
-        <NAlert v-if="files.message.value" :type="files.messageType.value" class="mb-3" :role="files.messageType.value === 'error' ? 'alert' : 'status'">{{files.message.value}}</NAlert>
         <p v-if="loadingDocument" class="muted-copy" role="status">正在读取文档…</p>
         <NButton v-if="accessRefreshFailed && session.user && !editor.paused && editor.document" :disabled="navigationBusy" class="mb-3" @click="refreshDocumentAccess">重新读取文档权限（保留草稿）</NButton>
         <DraftRecovery :documents="documents" :editor="editor" :authenticated="!!session.user && !session.recoveryNeeded" :logout-failed="logoutFailed" @failure="failure($event, session.epoch)" @force-logout="forceLogout" />
-        <DocumentEditor :editor="editor" :editable="editable" :can-save="canSave" :status="status" :busy="busy || loadingLatest || loadingAccess || documents.busy || !!documents.pending" @edit="edit" @save="save" @latest="latest" @merge="merge" />
-        <NButton v-if="session.user && editor.document && access?.actions.includes('history_read')" class="mt-3" @click="showHistory = !showHistory">{{showHistory ? '收起历史' : '查看文档历史'}}</NButton>
-        <DocumentHistory v-if="showHistory && session.user && editor.document && access?.actions.includes('history_read')" :key="editor.document.id + session.epoch" :client="client" :object-id="editor.document.id" :editor="editor" :documents="documents" :can-restore="editable" @failure="failure($event, session.epoch)" />
+        <DocumentEditor :editor="editor" :editable="editable" :can-save="canSave" :can-view-history="!!session.user && !!access?.actions.includes('history_read')" :status="status" :busy="busy || loadingLatest || loadingAccess || documents.busy || !!documents.pending" @edit="edit" @save="save" @history="showHistory = true" @latest="latest" @merge="merge" />
         <DeletedDocuments v-if="showDeleted && session.user && managesWorkspace" :key="session.epoch" :client="client" @failure="failure($event, session.epoch)" />
       </article>
     </main>
@@ -186,6 +195,12 @@ onUnmounted(() => { window.removeEventListener('beforeunload', beforeUnload); wi
       <AdminUsersPage v-if="page === 'admin' && session.user.site_admin" :key="session.epoch" :client="client" :user="session.user" @profile="session.user = $event" @failure="failure($event, session.epoch)" />
       <MembersPage v-if="page === 'members' && managesWorkspace" :key="session.user.id" :client="client" :user="session.user" :workspace-role="session.workspaceRole" @refresh="bootstrap" @failure="failure($event, session.epoch)" />
     </template>
+    <NDrawer :show="showHistory && !!session.user && !!editor.document && !!access?.actions.includes('history_read')" width="min(1120px, 100vw)" placement="right" class="document-history-drawer" :style="themeVariables" @update:show="showHistory = $event">
+      <NDrawerContent closable :native-scrollbar="false">
+        <template #header><div class="history-drawer-title"><span>文档历史</span><span>{{editor.document?.name}}</span></div></template>
+        <DocumentHistory v-if="showHistory && session.user && editor.document && access?.actions.includes('history_read')" :key="editor.document.id + session.epoch" :client="client" :object-id="editor.document.id" :editor="editor" :documents="documents" :can-restore="editable" @failure="failure($event, session.epoch)" @restored="notify('所选历史正文已恢复。', 'success')" />
+      </NDrawerContent>
+    </NDrawer>
     <FileActions :show="files.visible.value" :name="files.name.value" :action="files.action.value" :busy="fileBusy || documents.busy" :private-document="files.privateDocument.value" :can-create-private="['editor', 'admin', 'owner'].includes(session.workspaceRole ?? '')" :error="files.error.value" @update:private-document="files.privateDocument.value = $event" @update:name="files.name.value = $event" @close="files.close" @submit="files.submit" />
   </div>
 </template>

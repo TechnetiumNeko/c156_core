@@ -5,5 +5,11 @@ export const themeOverrides: GlobalThemeOverrides = {common: {
   textColorBase: tokens.ink, textColor1: tokens.ink, textColor2: '#4c5d53', textColor3: tokens.muted,
   borderColor: tokens.line, bodyColor: tokens.canvas, cardColor: tokens.surface,
   fontFamily: '"PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", system-ui, sans-serif', borderRadius: '6px',
+}, Message: {
+  borderRadius: '12px', padding: '13px 16px', fontSize: '14px', lineHeight: '1.6',
+  maxWidth: 'min(520px, calc(100vw - 32px))',
+  colorSuccess: '#f3faf5', colorWarning: '#fffaf0', colorError: '#fff5f2',
+  textColorSuccess: tokens.ink, textColorWarning: tokens.ink, textColorError: tokens.ink,
+  iconColorSuccess: tokens.accent, iconColorWarning: '#a37528', iconColorError: '#b34f3d',
 }};
 export const themeVariables = Object.fromEntries(Object.entries(tokens).map(([name, value]) => ['--' + name, value]));
