@@ -80,6 +80,29 @@ class MigrationTests(TempPathTestCase):
                 with closing(sqlite3.connect(path)) as connection:
                     self.assertEqual(connection.execute("SELECT name FROM sqlite_master WHERE name='alembic_version'").fetchall(), [])
 
+    def test_unrecognized_sqlite_named_objects_reject_takeover_and_backup(self):
+        additions = {
+            "table": "CREATE TABLE sqliteXunrecognized (value TEXT)",
+            "trigger": "CREATE TRIGGER sqliteXunrecognized AFTER INSERT ON workspaces BEGIN SELECT 1; END",
+        }
+        for kind, statement in additions.items():
+            with self.subTest(kind=kind):
+                path = self.baseline(kind + '-extra.sqlite')
+                with closing(sqlite3.connect(path)) as connection:
+                    connection.execute(statement)
+                    connection.commit()
+                before = path.read_bytes()
+                with closing(sqlite3.connect(path)) as connection:
+                    with self.assertRaises(SchemaError):
+                        migrations.validate_backup_schema(connection)
+                with self.assertRaises(SchemaError):
+                    upgrade_database(path)
+                target = self.temp_path(kind + '-backup.sqlite')
+                with self.assertRaises(SchemaError):
+                    backup_database(path, target)
+                self.assertFalse(target.exists())
+                self.assertEqual(path.read_bytes(), before)
+
     def test_baseline_rejects_broken_foreign_key_data(self):
         path = self.baseline()
         with closing(sqlite3.connect(path)) as connection:

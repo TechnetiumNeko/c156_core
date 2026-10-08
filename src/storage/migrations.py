@@ -63,7 +63,7 @@ def _stamp_baseline(connection: sqlite3.Connection) -> None:
 
 def _tables(connection: sqlite3.Connection) -> set[str]:
     return {row[0] for row in connection.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*'"
     )}
 
 
@@ -93,7 +93,7 @@ def _normalize_sql(sql: str) -> tuple[str, ...]:
 def _signature(connection: sqlite3.Connection) -> tuple:
     objects = connection.execute(
         "SELECT type,name,tbl_name,sql FROM sqlite_master "
-        "WHERE name NOT LIKE 'sqlite_%' AND name != 'alembic_version' ORDER BY type,name"
+        "WHERE name NOT GLOB 'sqlite_*' AND name != 'alembic_version' ORDER BY type,name"
     ).fetchall()
     definitions = tuple((row[0], row[1], row[2], _normalize_sql(row[3] or "")) for row in objects)
     structures = []
