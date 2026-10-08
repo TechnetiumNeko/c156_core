@@ -28,8 +28,8 @@ test('login refreshes root, blocks foreign draft, requires explicit discard', as
     assert.equal(session.user, null);
     assert.equal(session.blocked, true);
     assert.equal(editor.draft, 'alice draft');
-    assert.equal(session.acceptPending(), false);
-    assert.equal(session.acceptPending({ discard: true }), true);
+    assert.equal(await session.acceptPending(), false);
+    assert.equal(await session.acceptPending({ discard: true }), true);
     assert.equal((session.root as typeof node | null)?.id, 'bob-root');
     assert.equal(editor.document, null);
 });
@@ -207,7 +207,7 @@ test('bootstrap retry after successful foreign login keeps old draft blocked unt
     assert.equal(session.recoveryNeeded, false); assert.equal(session.blocked, true);
     assert.equal(editor.draft, 'alice draft'); assert.equal(editor.owner, 'alice');
     assert.equal(editor.paused, true); assert.equal(session.user, null);
-    assert.equal(session.acceptPending({ discard: true }), true);
+    assert.equal(await session.acceptPending({ discard: true }), true);
     assert.equal((session.user as { id: string } | null)?.id, 'bob'); assert.equal(editor.document, null);
 });
 

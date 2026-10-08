@@ -1,7 +1,7 @@
 import { ApiClient, ApiError } from '../api/client.ts';
 import type { Bootstrap, Node, Access, User } from '../api/types.ts';
 import { EditorState } from './editor.ts';
-export interface SessionLifecycle { beforeLeaveIdentity(): Promise<void> }
+export interface SessionLifecycle { beforeLeaveIdentity(): Promise<void>; retainedIdentity?(): string | null }
 export class SessionState {
     scope: { workspace_id: string; branch_id: string } | null = null;
     private lifecycle?: SessionLifecycle;
@@ -53,12 +53,29 @@ export class SessionState {
         this.pending = null;
         return true;
     }
-    acceptPending({ discard = false }: {
+    private async acceptBootstrap(value: Bootstrap, epoch: number, discard = false) {
+        if (epoch !== this.epoch) return false;
+        const owner = this.lifecycle?.retainedIdentity?.() ?? this.editor.owner ?? this.editor.identity;
+        if (!('nonce' in value) && owner && owner !== value.user.id) {
+            // Pause old callbacks before draining; do not accept a foreign account while old memory remains.
+            this.reset();
+            this.editor.setIdentity(null);
+            try { await this.lifecycle?.beforeLeaveIdentity(); }
+            catch (error) {
+                if (epoch !== this.epoch) return false;
+                this.blocked = true; this.pending = value;
+                throw error;
+            }
+            if (epoch !== this.epoch) return false;
+        }
+        return this.accept(value, discard);
+    }
+    async acceptPending({ discard = false }: {
         discard?: boolean;
     } = {}) {
         if (!this.pending || !discard)
             return false;
-        return this.accept(this.pending, true);
+        return this.acceptBootstrap(this.pending, this.epoch, true);
     }
     private begin() {
         this.recoveryNeeded = true;
@@ -84,11 +101,7 @@ export class SessionState {
         const value = await this.anonymousBootstrap();
         if (epoch !== this.epoch)
             return false;
-        if (!('nonce' in value) && (this.editor.owner ?? this.editor.identity) && (this.editor.owner ?? this.editor.identity) !== value.user.id) {
-            await this.lifecycle?.beforeLeaveIdentity();
-            if (epoch !== this.epoch) return false;
-        }
-        return this.accept(value);
+        return this.acceptBootstrap(value, epoch);
     }
     async login(loginName: string, password: string) {
         await this.lifecycle?.beforeLeaveIdentity();
@@ -106,7 +119,7 @@ export class SessionState {
                     const anonymous = await this.anonymousBootstrap();
                     if (epoch !== this.epoch)
                         return false;
-                    this.accept(anonymous);
+                    await this.acceptBootstrap(anonymous, epoch);
                 }
                 catch {
                     // Report the original authentication error even if nonce recovery fails.
@@ -121,7 +134,7 @@ export class SessionState {
         const value = await this.client.bootstrap();
         if (epoch !== this.epoch)
             return false;
-        return this.accept(value);
+        return this.acceptBootstrap(value, epoch);
     }
     async logout() {
         await this.lifecycle?.beforeLeaveIdentity();
@@ -143,7 +156,7 @@ export class SessionState {
         const value = await this.anonymousBootstrap();
         if (epoch !== this.epoch)
             return false;
-        return this.accept(value);
+        return this.acceptBootstrap(value, epoch);
     }
     async expire() {
         const epoch = this.begin();
@@ -153,6 +166,6 @@ export class SessionState {
         const value = await this.anonymousBootstrap();
         if (epoch !== this.epoch)
             return false;
-        return this.accept(value);
+        return this.acceptBootstrap(value, epoch);
     }
 }

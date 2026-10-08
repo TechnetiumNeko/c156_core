@@ -28,6 +28,8 @@ export class DocumentSession {
     private operationId: () => string;
     private lease: DraftLease | null = null;
     private record: DraftRecord | null = null;
+    private ownerId: string | null = null;
+    get retainedIdentity(): string | null { return this.ownerId; }
     private epoch = 0;
     private queue: Promise<void> = Promise.resolve();
     private persistenceError: unknown = null;
@@ -74,6 +76,7 @@ export class DocumentSession {
         if ('nonce' in authenticated || authenticated.user.id !== userId || authenticated.scope.workspace_id !== scope.workspace_id || authenticated.scope.branch_id !== scope.branch_id)
             throw new Error('当前账号或作品范围已改变，请重新打开文档。');
         this.editor.setIdentity(userId, { discard: true });
+        this.ownerId = userId;
         const key: DraftKey = { userId, workspaceId: scope.workspace_id, branchId: scope.branch_id, objectId };
         let snapshot: Document | null = null;
         let localReason = '';
@@ -129,7 +132,15 @@ export class DocumentSession {
         this.record.baseRevisionId ??= this.editor.revision;
         void this.persist().catch(() => {});
     }
+    private requireComparisonDisposition() {
+        if (this.editor.comparisonDraft !== null) throw new Error('合并前的草稿仅保留在此页面。请先合并或复制需要的文字，再明确移除参考；也可留在当前页面。');
+    }
+    dismissComparison() {
+        // Explicit reference disposition never deletes the persisted current draft.
+        this.editor.comparisonDraft = null;
+    }
     async startMerge() {
+        this.requireComparisonDisposition();
         this.writable();
         if (this.pending || this.busy || this.awaitingRecovery || !this.record) return;
         if (!this.editor.startMerge()) return;
@@ -152,6 +163,7 @@ export class DocumentSession {
         } else this.recovery = { kind: 'none' };
     }
     async discardDraft() {
+        this.requireComparisonDisposition();
         if (!this.record || !this.leaseHeld || this.leaving || this.busy) throw new Error('当前不能清理草稿。');
         const epoch = this.epoch;
         const key = { ...this.record.key }; const token = this.record.fencingToken;
@@ -284,6 +296,7 @@ export class DocumentSession {
         if (this.persistenceError) throw this.persistenceError;
     }
     async leave({ acknowledgeUnstoredLoss = false }: { acknowledgeUnstoredLoss?: boolean } = {}) {
+        this.requireComparisonDisposition();
         // Only an explicit UI acknowledgement may abandon failed local writes. Default exit retains memory.
         this.leaving = true;
         try {
@@ -297,7 +310,7 @@ export class DocumentSession {
                 this.epoch++;
             }
             await this.lease?.release();
-            this.lease = null; this.leaseHeld = false; this.record = null; this.available = false; this.access = null;
+            this.lease = null; this.leaseHeld = false; this.record = null; this.ownerId = null; this.available = false; this.access = null;
             this.localOnlyContent = null; this.awaitingRecovery = false; this.recovery = { kind: 'none' }; this.localStatus = { kind: 'idle' }; this.busy = false;
             this.persistenceError = null; this.operationError = null;
             this.editor.hideDocument();

@@ -24,7 +24,7 @@ const page = ref<'documents' | 'account' | 'admin' | 'members'>('documents');
 const client = markRaw(new ApiClient());
 const editor = reactive(new EditorState()) as EditorState;
 const documents = reactive(new DocumentSession(client, editor)) as DocumentSession;
-const session = reactive(new SessionState(client, editor, {beforeLeaveIdentity: () => documents.leave()})) as SessionState;
+const session = reactive(new SessionState(client, editor, {beforeLeaveIdentity: () => documents.leave(), retainedIdentity: () => documents.retainedIdentity})) as SessionState;
 const directory = reactive(new DirectoryState(client)) as DirectoryState;
 const busy = ref(false); const loadingDocument = ref(false); const loadingLatest = ref(false);
 const message = ref(''); const ready = ref(false);
@@ -49,10 +49,9 @@ async function failure(error: unknown, epoch: number) {
   if (error instanceof ApiError && error.status === 401 && session.user) {
     directory.reset();
     busy.value = true;
-    try { await session.expire(); ready.value = true; }
+    try { await session.expire(); syncDirectory(); ready.value = true; message.value = session.user ? '' : '会话已失效，草稿已保留。请重新登录。'; }
     catch (recovery) { message.value = recovery instanceof Error ? recovery.message : '会话恢复失败，请重试'; ready.value = false; }
     finally { busy.value = false; }
-    message.value = '会话已失效，草稿已保留。请重新登录。';
   } else if (error instanceof ApiError && error.status === 401 && !client.nonce && !session.recoveryNeeded) {
     const text = '账号、密码或凭据不正确，请检查后重试。';
     try {await session.bootstrap(); syncDirectory(); ready.value = true;}
@@ -98,8 +97,10 @@ async function forceLogout() {
   catch (error) { await failure(error, session.epoch); }
 }
 async function acceptPending() {
-  try { await documents.leave(); if (session.acceptPending({discard: true})) syncDirectory(); }
+  busy.value = true;
+  try { if (await session.acceptPending({discard: true})) { syncDirectory(); ready.value = true; message.value = ''; } }
   catch (error) { await failure(error, session.epoch); }
+  finally { busy.value = false; }
 }
 async function toggle(id: string) {
   const epoch = session.epoch;
@@ -128,7 +129,7 @@ async function latest() {
   catch (error) { await failure(error, epoch); }
   finally { loadingLatest.value = false; }
 }
-async function merge() { if (documents.pending || documents.busy) return; if (window.confirm('以最新正文开始手动合并？当前草稿将保留在独立的只读参考区。')) { try { await documents.startMerge(); } catch (error) { await failure(error, session.epoch); } } }
+async function merge() { if (documents.pending || documents.busy) return; if (window.confirm('以最新正文开始手动合并？当前草稿仅在此页面的只读参考区保留。离开前需要合并、复制或明确移除这份参考。')) { try { await documents.startMerge(); } catch (error) { await failure(error, session.epoch); } } }
 async function passwordRevoked() {
   busy.value = true; access.value = null; directory.reset();
   try {await session.expire(); ready.value = true; message.value = '密码已修改，请重新登录。未保存的草稿仍保留。';}

@@ -49,7 +49,7 @@ function setup() {
     });
     let releases = 0; let ids = 0;
     const session = reactive(new DocumentSession(client, editor, store, { acquireLease: async () => ({ async release() { releases++; } }), operationId: () => 'op-' + ++ids }));
-    return { client, store, editor, session, writes, setMutation: (fn: typeof mutation) => { mutation = fn; }, setStatus: (fn: typeof status) => { status = fn; }, setHead: (d: typeof head) => { head = d; }, setIdentity: (id: string) => { identity = id; }, deny: () => { denied = true; }, denyHistory: () => { historyDenied = true; }, releases: () => releases };
+    return { client, store, editor, session, writes, setMutation: (fn: typeof mutation) => { mutation = fn; }, setStatus: (fn: typeof status) => { status = fn; }, setHead: (d: typeof head) => { head = d; }, setIdentity: (id: string) => { identity = id; loggedOut = false; }, pause: () => { loggedOut = true; }, deny: () => { denied = true; }, denyHistory: () => { historyDenied = true; }, releases: () => releases };
 }
 async function seed(store: DraftStorage, pending = false) {
     const record = await store.claim(key);
@@ -243,8 +243,89 @@ test('explicit manual merge persists adopted base and reopens unchanged server w
     assert.equal(s.editor.draft, 'server update');
     s.session.edit('manually merged'); await s.session.flush();
     assert.equal((await s.store.read(key))?.baseRevisionId, 'r2');
+    s.session.dismissComparison();
     await s.session.open(scope, 'doc', 'alice');
     assert.deepEqual(s.session.recovery, {kind: 'draft', baseStale: false});
     await s.session.continueDraft();
     assert.equal(s.editor.draft, 'manually merged'); assert.equal(s.editor.conflict, false);
+});
+
+
+test('foreign expiration bootstrap releases local-only ownership and preserves original account cache', async () => {
+    for (const anonymousPause of [false, true]) {
+        const f = setup(); await seed(f.store); f.deny();
+        const identity = new SessionState(f.client, f.editor, {
+            retainedIdentity: () => f.session.retainedIdentity,
+            beforeLeaveIdentity: () => f.session.leave(),
+        });
+        await identity.bootstrap(); await f.session.open(scope, 'doc', 'alice');
+        const stored = await f.store.read(key);
+        if (anonymousPause) {
+            f.pause(); await identity.expire();
+            assert.equal(identity.user, null); assert.equal(f.editor.identity, null); assert.equal(f.editor.owner, null);
+            assert.equal(f.session.localOnlyContent, 'saved local'); assert.equal(f.session.leaseHeld, true);
+            f.setIdentity('alice'); await identity.bootstrap();
+            assert.equal(f.session.localOnlyContent, 'saved local'); assert.equal(f.releases(), 0);
+            f.pause(); await identity.expire();
+        }
+        f.setIdentity('bob');
+        const disk = deferred<void>(); const flush = f.store.flush.bind(f.store);
+        f.store.flush = async () => { await disk.promise; await flush(); };
+        const accepting = anonymousPause ? identity.bootstrap() : identity.expire();
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(identity.user, null); assert.equal(f.editor.paused, true);
+        assert.equal(f.session.localOnlyContent, 'saved local'); assert.equal(f.releases(), 0);
+        disk.resolve(); await accepting;
+        assert.equal((identity.user as { id: string } | null)?.id, 'bob'); assert.equal(f.editor.identity, 'bob');
+        assert.equal(f.session.localOnlyContent, null); assert.equal(f.session.leaseHeld, false);
+        assert.equal(f.releases(), 1); assert.deepEqual(await f.store.read(key), stored);
+    }
+});
+
+test('unresolved merge reference blocks navigation and identity departure until explicit disposition', async () => {
+    const f = setup();
+    const identity = new SessionState(f.client, f.editor, {
+        retainedIdentity: () => f.session.retainedIdentity,
+        beforeLeaveIdentity: () => f.session.leave(),
+    });
+    await identity.bootstrap(); await f.session.open(scope, 'doc', 'alice');
+    f.session.edit('unique unsaved Alice text'); await f.session.flush();
+    f.setHead(doc('server update', 'r2'));
+    await f.session.open(scope, 'doc', 'alice'); await f.session.continueDraft(); await f.session.startMerge();
+    const stored = await f.store.read(key); const releases = f.releases();
+    assert.equal(stored?.content, 'server update');
+    await assert.rejects(f.session.open(scope, 'doc', 'alice'), /合并前/);
+    await assert.rejects(identity.logout(), /合并前/);
+    await assert.rejects(f.session.leave({ acknowledgeUnstoredLoss: true }), /合并前/);
+    await assert.rejects(f.session.discardDraft(), /合并前/);
+    assert.equal(f.editor.comparisonDraft, 'unique unsaved Alice text');
+    assert.equal(f.session.leaseHeld, true); assert.equal(f.releases(), releases);
+    assert.deepEqual(await f.store.read(key), stored);
+    f.setIdentity('bob'); await assert.rejects(identity.expire(), /合并前/);
+    assert.equal(identity.user, null); assert.equal(f.editor.paused, true);
+    assert.equal(f.editor.comparisonDraft, 'unique unsaved Alice text');
+    await assert.rejects(identity.acceptPending({ discard: true }), /合并前/);
+    f.session.dismissComparison();
+    assert.deepEqual(await f.store.read(key), stored);
+    assert.equal(await identity.acceptPending({ discard: true }), true);
+    assert.equal((identity.user as { id: string } | null)?.id, 'bob'); assert.equal(f.editor.document, null);
+    assert.equal(f.session.leaseHeld, false); assert.deepEqual(await f.store.read(key), stored);
+    f.setIdentity('alice'); await identity.bootstrap(); await f.session.open(scope, 'doc', 'alice');
+    await f.session.continueDraft(); assert.equal(f.editor.draft, 'server update');
+    f.session.edit('ordinary durable draft'); await f.session.flush(); await identity.logout();
+    assert.equal((await f.store.read(key))?.content, 'ordinary durable draft');
+});
+
+test('successful save and another merge cannot silently erase an unresolved original reference', async () => {
+    const f = setup(); await f.session.open(scope, 'doc', 'alice');
+    f.session.edit('unique original'); await f.session.flush(); f.setHead(doc('new head', 'r2'));
+    await f.session.open(scope, 'doc', 'alice'); await f.session.continueDraft(); await f.session.startMerge();
+    f.session.edit('partly merged'); await f.session.save();
+    assert.equal(f.editor.comparisonDraft, 'unique original');
+    assert.equal(f.editor.draft, 'partly merged'); assert.equal(f.editor.dirty, false);
+    f.editor.setLatest(doc('another head', 'r3'));
+    await assert.rejects(f.session.startMerge(), /合并前/);
+    assert.equal(f.editor.comparisonDraft, 'unique original');
+    f.session.dismissComparison(); await f.session.leave();
+    assert.equal((await f.store.read(key))?.content, 'partly merged');
 });
