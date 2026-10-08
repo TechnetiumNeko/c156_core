@@ -89,7 +89,7 @@ python run_web.py --database data/c156.sqlite --port 8000
 
 账号、密码、24 小时会话、站点账号管理、默认工作区成员／角色、继承 ACL、私密与文档冻结已实现。文档历史浏览、正文恢复、操作回执和本机草稿已接入 Vue；已删除历史仅向工作区 admin/owner 开放，不提供恢复删除。实时协作、作品级提交与分支、媒体上传仍属后续阶段。生产部署脚本已提供显式迁移流程，真实部署验收见部署文档。后续实现应将这些能力放在共用应用服务层，再由 Web 和 CLI 接入。正文 revision_id 检测正文冲突；entry.version 检测结构和 metadata，workspace_access_settings.version 检测成员／ACL／阅读范围／已有对象私密／冻结配置。工作区 owner 不等于 private 创建者；站点管理员也不会自动获得其他工作区内容权限。默认 read_scope 为 members；可配置 authenticated／everyone 的阅读基线，但所有写操作仍要求有效成员。reader 默认读取，editor 默认读取／编辑／创建／改名／移动／删除，admin／owner 管理工作区授权与内容，owner 可转移所有权；review／publish 仅建模配置，没有发布流程。ACL 按最近对象及 user、role、authenticated、everyone 顺序计算，无法阅读的祖先不会因私密所有权而被跳过。其他人的冻结不会被管理角色静默绕过。
 
-站点管理员创建账号后一次性取得 48 小时激活凭据；重置凭据有效 1 小时，重置和改密会撤销旧会话。凭据应私下交给对应用户，不写日志。CLI 支持 login／logout 和 mkdir／edit --private；网页提供账号与访问管理。草稿绑定原用户：会话失效暂停保存并保留正文和原基础修订，同用户重登继续，换账号须处理旧草稿；草稿仅驻留内存。
+站点管理员创建账号后一次性取得 48 小时激活凭据；重置凭据有效 1 小时，重置和改密会撤销旧会话。凭据应私下交给对应用户，不写日志。CLI 支持 login／logout 和 mkdir／edit --private；网页提供账号与访问管理。草稿绑定原用户：会话失效暂停保存并保留已显示正文和原基础修订。Vue 通过 IndexedDB 保存本机稿，同用户重登后重新打开文档并选择继续；主动退出保留已存稿，其他账号不加载它。旧 HTML／JS 工作台的草稿仍仅驻留内存。
 
 ## 开发与文档
 
